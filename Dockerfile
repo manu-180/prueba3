@@ -1,14 +1,12 @@
 # This Dockerfile is used to deploy a simple single-container Reflex app instance.
-FROM python:3.11
+FROM python:3.12
 
 # Copy local context to `/app` inside container (see .dockerignore)
 WORKDIR /app
 COPY . .
 
-ENV URL = "https://gcjyhrlcftbkeaiqlzlm.supabase.co"
+COPY .env .env
 
-ENV KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdjanlocmxjZnRia2VhaXFsemxtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTU3MjQ3NzAsImV4cCI6MjAzMTMwMDc3MH0.MFsm9DJ9XnVnsTUK-N2SsCBf8wnhW03mGp5d2Z2Jf9Q"
-# Install app requirements and reflex in the container
 RUN pip install -r requirements.txt
 
 # Deploy templates and prepare app

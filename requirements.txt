@@ -1,3 +1,4 @@
 reflex==0.5.7
 python-dotenv
 supabase
+python-socketio>=5.0.0

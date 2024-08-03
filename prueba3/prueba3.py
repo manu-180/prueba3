@@ -402,7 +402,116 @@ class ButtonState(rx.State):
             self.show_text_jueves= False
         if self.show_text_viernes == True:
             self.show_text_viernes= False
+
+class State(rx.State):
+    
+    # email propiedades
+    email_width = "0px"
+    email = "Ingrese su mail"
+    email_value = ""
+    email_underline = "2px solid white"
+    email_underline_color = "white"  
+
+    # checkbox email propiedades
+    email_check_opacity = "0%"
+    email_status = False
+    email_check_pos = "translate(5px, 0px)"
+    
+    # password propiedades
+    password_width = "0px"
+    password = "Ingrese su contraseña"
+    password_value = ""
+    password_underline = "2px solid white"
+    password_underline_color = "white"  
+    error_login = ""
+    error_cond = False
+    
+    # password confirm propiedades
+    password_width_confirm = "0px"
+    password_confirm = "Confirme su contraseña"
+    password_value_confirm = ""
+    password_underline_confirm = "2px solid white"
+    password_underline_color_confirm = "white"  
+    cond_create_user = False
+
+    box_width = "60px"
+    box_height = "60px"
+
+    result_sign_in = ""
+    result_pos = "transform(0px, 0px)"
+    result_opacity = "0%"
+    result_color = ""
+
+    def open_box(self):
+        self.box_width = "450px"
+        self.email_width = "400px"
+
+    def on_check_email(self, email_value):
+        self.email_value = email_value
+        if any(
+            domain in self.email_value
+            for domain in ("@gmail.com", "@hotmail.com", "@aol.com")
+        ):
+            self.email_underline_color = "green"
+            self.box_height = "125px"
+            self.password_width = "400px"
+            self.password_underline = "2px solid white"
+            self.email_check_pos = "transform(-250px, 0)"
+            self.email_check_opacity = "100%"
+            self.email_status = True
+        else:
+            self.email_underline_color = "red"
+            self.box_height = "60px"
         
+    def on_check_password(self, password_value):
+        self.password_value = password_value
+        if len(password_value) >= 6:
+            self.password_underline_color = "green"
+            self.box_height = "250px"
+            self.password_check_pos = "transform(-250px, 0px)"
+            self.password_check_opacity = "100%"
+            self.password_status = True
+            self.password_width_confirm = "400px" 
+        else:
+            self.password_underline_color = "red"
+            self.box_height = "125px"
+            self.password_width_confirm = "0px"  
+            
+    def on_check_password_confirm(self, password_value_confirm):
+        self.password_value_confirm = password_value_confirm
+        if self.password_value_confirm == self.password_value:
+            self.password_underline_color_confirm = "green"
+            self.box_height = "300px"
+            self.cond_create_user = True
+        else:
+            self.password_underline_color_confirm = "red"
+            self.box_height = "250px"
+    
+    def user_sign_in(self):
+
+        try:
+            data = supabase.supabase.auth.sign_in_with_password({"email": self.email_value, "password": self.password_value})
+            return rx.redirect("/")
+        except :
+            self.error_cond = True
+            self.error_login = "Autenticacion invalida. Verifique mail y/o contraseña"
+            
+            
+
+    def registrar_user_submit(self):
+
+        usuarios = []
+        ids = []
+
+        data = supabase.supabase.auth.sign_up(credentials={"email": self.email_value, "password": self.password_value})
+
+        for i in supabase.data_usuarios():
+            # usuarios.append(i.usuario)
+            ids.append(i.id)
+        id=max(ids)
+        id+=1
+        # if self.email_value not in usuarios:
+        response = (supabase.supabase.table("usuarios").insert({"id": id ,"usuario": self.email_value, "clases_disponibles": 0, "recuperar":0, "trigger_alert": 0}).execute())
 
 class Login(rx.State):
 
@@ -428,10 +537,9 @@ class Login(rx.State):
         if form_data["email"] not in usuarios:
             response = (supabase.supabase.table("usuarios").insert({"id": id ,"usuario": form_data["email"], "clases_disponibles": 0, "recuperar":0, "trigger_alert": 0}).execute())
     
-    def iniciar_sesion_submit(self, form_data):
-        self.email = form_data["email"]
-        self.password = form_data["password"]
-        data = supabase.supabase.auth.sign_in_with_password({"email": form_data["email"], "password": form_data["password"]})
+    def iniciar_sesion_submit(self, email_value, password_value):
+
+        data = supabase.supabase.auth.sign_in_with_password({"email": email_value, "password": password_value})
         print(data.user.email)
         print(data.user.id)
         
@@ -711,6 +819,8 @@ class SupaBase():
               
 supabase = SupaBase()
 
+supabase.agregar_fechas_constantemente()
+
 
 @rx.page(
     title="index",
@@ -724,7 +834,6 @@ supabase = SupaBase()
 def index() -> rx.Component:
     return rx.box(
         navbar(),
-        button_reset_database(),
     )
 
 
@@ -805,35 +914,271 @@ def gestion_horarios():
 def crear_usuario():
     return rx.box(
         navbar(),
-        rx.center(
-            rx.vstack(
-                registrar_usuario(),
-                margin_top = "5em"
-            )
-        ),
-        width="100%"  
+        input_create_user(),
+        display="grid",
+        position="relative",
+        overflow="hidden",
+        place_items="center",
     )
+
+
 
 @rx.page(
-        route="/iniciar_sesion",
-        title="crear usuario ",
-        description="Taller de ceramica",
-        on_load= [
-              PageState.actualizar_user,
-            ])
-def iniciar_sesion():
+    route="/login",
+    title="login",
+    description="Taller de ceramica"
+)
+def login():
     return rx.box(
         navbar(),
-        rx.center(
-            rx.vstack(
-                iniciar_usuario(),
-                margin_top = "5em"
-            )
+        inputs(),
+        display="grid",
+        position="relative",
+        overflow="hidden",
+        place_items="center",
+    )
+    
+def inputs():
+    return rx.vstack(
+        input_box(),
+        rx.cond(
+            State.error_cond,
+            mensaje_alerta(State.error_login),
         ),
-        width="100%"  
+        margin_top="10em",
     )
 
-
+def input_box():
+    return rx.box(
+        rx.vstack(
+            rx.spacer(),
+            rx.hstack(
+                rx.box(
+                    rx.chakra.input(
+                        value=State.email_value,
+                        placeholder=State.email,
+                        on_change=lambda email_value: State.on_check_email(email_value),
+                        width=State.email_width,
+                        transition="width 0.5s ease 0.65s",
+                        height="28px", 
+                        border_radius="4px",
+                        font_size="13px",
+                        letter_spacing="0.5px",
+                        bg="#1D2330",
+                        color="white",
+                        type_="email",
+                        margin_bottom="3px",
+                        margin_left="8px",
+                        border="none",
+                        _focus={
+                            "outline": "none",
+                            "box_shadow": "none",
+                        },
+                    ),
+                    padding="0px",
+                    width=State.email_width,
+                    border_bottom=f"2px solid {State.email_underline_color}",
+                    transition="width 0.65s ease 0.65s",
+                ),
+            ),
+            rx.spacer(),
+            rx.hstack(
+                rx.box(
+                    rx.chakra.password(
+                        value=State.password_value,
+                        placeholder=State.password,
+                        on_change=lambda password_value: State.on_check_password(password_value),
+                        width=State.password_width,
+                        transition="width 0.5s ease 0.65s",
+                        font_size="13px",
+                        height="28px", 
+                        border_radius="4px",
+                        bg="#1D2330",
+                        color="white",
+                        letter_spacing="0.5px",
+                        margin_left="8px",
+                        margin_bottom="3px",
+                        border="none",
+                        _focus={
+                            "outline": "none",
+                            "box_shadow": "none",
+                        },
+                    ),
+                    padding="0px",
+                    width=State.password_width,
+                    border_bottom=f"2px solid {State.password_underline_color}",
+                    transition="width 0.65s ease 0.65s",
+                ),
+            ),
+            rx.spacer(),
+            rx.box(
+                rx.hstack(
+                    # rx.link(
+                        rx.button(
+                            "Iniciar sesion",
+                            width  = "10.5em",
+                            height= "3em",
+                            color_scheme="blue",
+                            on_click= lambda:State.user_sign_in(),
+                            style=style_gris_pizzarra
+                        ),
+                    #     href="/"
+                    # ),
+                    rx.link(
+                        rx.button(
+                            "Crear usuario",
+                            width ="10.5em",
+                            height= "3em",
+                            style=style_gris_pizzarra
+                        ),
+                        
+                        href="/crear_usuario"
+                    )
+                ),
+                min_width= "auto",
+                height="50px",
+                justify_content = "center",
+                center_content = True,
+            ),
+        ),
+        width=State.box_width,
+        height=State.box_height,
+        bg="#1D2330",
+        border_radius="5px",
+        padding="8px",
+        display="grid",
+        position="relative",
+        overflow="hidden",
+        transition="width 0.65s, height 0.65s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+        on_click=lambda: State.open_box()
+    )
+    
+def input_create_user():
+    return rx.box(
+        rx.vstack(
+            rx.spacer(),
+            rx.hstack(
+                rx.box(
+                    rx.chakra.input(
+                        value=State.email_value,
+                        placeholder=State.email,
+                        on_change=lambda email_value: State.on_check_email(email_value),
+                        width=State.email_width,
+                        transition="width 0.5s ease 0.65s",
+                        height="28px", 
+                        border_radius="4px",
+                        font_size="13px",
+                        letter_spacing="0.5px",
+                        bg="#1D2330",
+                        color="white",
+                        type_="email",
+                        margin_bottom="3px",
+                        margin_left="8px",
+                        border="none",
+                        _focus={
+                            "outline": "none",
+                            "box_shadow": "none",
+                        },
+                    ),
+                    padding="0px",
+                    width=State.email_width,
+                    border_bottom=f"2px solid {State.email_underline_color}",
+                    transition="width 0.65s ease 0.65s",
+                ),
+            ),
+            rx.spacer(),
+            rx.vstack(
+                rx.box(
+                    rx.chakra.input(
+                        value=State.password_value,
+                        placeholder=State.password,
+                        on_change=lambda password_value: State.on_check_password(password_value),
+                        width=State.password_width,
+                        transition="width 0.5s ease 0.65s",
+                        font_size="13px",
+                        height="28px", 
+                        border_radius="4px",
+                        bg="#1D2330",
+                        color="white",
+                        letter_spacing="0.5px",
+                        margin_left="8px",
+                        margin_bottom="3px",
+                        border="none",
+                        _focus={
+                            "outline": "none",
+                            "box_shadow": "none",
+                        },
+                        type_="password",
+                    ),
+                    padding="0px",
+                    width=State.password_width,
+                    border_bottom=f"2px solid {State.password_underline_color}",
+                    transition="width 0.65s ease 0.65s",
+                ),
+                rx.box(
+                    rx.chakra.input(
+                        value=State.password_value_confirm,
+                        placeholder=State.password_confirm,
+                        on_change=lambda password_value_confirm: State.on_check_password_confirm(password_value_confirm),
+                        width=State.password_width_confirm,
+                        transition="width 0.5s ease 0.65s",
+                        font_size="13px",
+                        height="28px", 
+                        border_radius="4px",
+                        bg="#1D2330",
+                        color="white",
+                        letter_spacing="0.5px",
+                        margin_left="8px",
+                        margin_bottom="3px",
+                        border="none",
+                        _focus={
+                            "outline": "none",
+                            "box_shadow": "none",
+                        },
+                        type_="password",
+                    ),
+                    padding="0px",
+                    width=State.password_width_confirm,
+                    border_bottom=f"2px solid {State.password_underline_color_confirm}",
+                    transition="width 0.65s ease 0.65s",
+                ),
+            ),
+            rx.spacer(),
+            rx.cond(
+                State.cond_create_user,
+                rx.box(
+                    rx.link(
+                        rx.button(
+                            "Crear usuario",
+                            width  = "10.5em",
+                            height= "3em",
+                            color_scheme="blue",
+                            on_click= lambda:State.registrar_user_submit(),
+                            style=style_gris_pizzarra
+                        ),
+                        href="/"
+                    ),
+                min_width="auto",
+                height="50px",
+                justify_content="center",
+                center_content=True,
+                opacity="1",  
+                transition="opacity 0.65s ease",
+            ),
+            )
+        ),
+        width=State.box_width,
+        height=State.box_height,
+        bg="#1D2330",
+        border_radius="5px",
+        padding="8px",
+        display="grid",
+        position="relative",
+        overflow="hidden",
+        transition="width 0.65s, height 0.65s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+        on_click=lambda: State.open_box(),
+        margin_top="10em",
+    )
 
 
 def registrar_usuario():
@@ -863,32 +1208,6 @@ def registrar_usuario():
             reset_on_submit=True
         )
 
-def iniciar_usuario():
-    return rx.form.root(
-            rx.vstack(
-                rx.input(
-                    labol= "Email:",
-                    name="email",
-                    placeholder="Ingrese su email:",
-                    required=True
-                ),
-                rx.input(
-                    labol= "Contraseña:",
-                    name="password",
-                    placeholder="Ingrese su contraseña:",
-                    type="password",
-                    required=True
-                ),
-                rx.button(
-                    rx.text.strong("Iniciar sesion", color= "black"), 
-                    type="submit", width ="12em",
-                    style=style_perla,
-                    on_click=rx.redirect("/")
-                )
-            ),
-            on_submit=Login.iniciar_sesion_submit,
-            reset_on_submit=True
-        )
     
 
 def insertar_usuario():
@@ -1394,7 +1713,7 @@ def iniciar_sesion_button():
                 style=style_gris_pizzarra,
                 width = "7em"
             ),
-            href="/iniciar_sesion"
+            href="/login"
         )
     )
     
@@ -1601,3 +1920,5 @@ app.add_page(index)
 app.add_page(turnos)
 app.add_page(mis_horarios)
 app.add_page(gestion_horarios)
+app.add_page(crear_usuario)
+app.add_page(login)

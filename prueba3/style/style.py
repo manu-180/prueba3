@@ -110,7 +110,7 @@ style_gris_pizzarra= dict(
     )
 
 style_gris_pizzarra_dark = dict(
-    bg="linear-gradient(145deg, #2f4f4f, #1c1c1c)",
+    bg="linear-gradient(145deg, #2f4f4f, #4a4f4f)",
     border="2px solid #4e5964",
     border_radius="5px",
     box_shadow="1px 1px 2px #1c1c1c, -1px -1px 2px #4e5964",
@@ -119,7 +119,7 @@ style_gris_pizzarra_dark = dict(
     padding="5px",
     transition="all 0.3s ease",
     _hover={
-        "bg": "linear-gradient(145deg, #1c1c1c, #2f4f4f)",
+        "bg": "linear-gradient(145deg, #274040, #2f4f4f)",
         "box_shadow": "inset 1px 1px 2px #4e5964, inset -1px -1px 2px #1c1c1c",
     }
 )

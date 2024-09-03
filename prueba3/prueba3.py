@@ -754,10 +754,9 @@ class Login(rx.State):
             return check_momentaneo()
 
         except Exception as e:
-            print(f"Error al registrar usuario: {e}")
             self.check_cond_crear = False
             self.error_cond_crear = True
-            self.error_de_crear = "Hubo un problema al registrar el usuario."
+            self.error_de_crear = f"Hubo un problema al registrar el usuario. Nombre del error : {e}"
             return error_momentaneo()
 
         

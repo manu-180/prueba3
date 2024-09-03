@@ -1,3 +1,4 @@
 reflex==0.5.8
 python-dotenv
 supabase
+requests

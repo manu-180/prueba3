@@ -1,4 +1,5 @@
-reflex==0.5.10
+reflex==0.5.8
 python-dotenv
 supabase
 requests
+twilio

@@ -9,6 +9,8 @@ from typing import Any
 from enum import Enum
 from http.cookies import SimpleCookie
 from collections import Counter
+from twilio.rest import Client
+
 
 
 
@@ -30,6 +32,15 @@ class Total(rx.Base):
     hora:str
     mails:list
     lugar_disponible:int
+    
+class Total2(rx.Base):
+    id:int 
+    semana:str
+    dia:str
+    fecha:str
+    hora:str
+    mails:list
+    lugar_disponible:int
 
 class Usuarios(rx.Base):
     id:int
@@ -40,6 +51,7 @@ class Usuarios(rx.Base):
     recuperar:int
     trigger_alert:int
     sexo:str
+    clases_canceladas:list
     
    
 
@@ -53,7 +65,7 @@ async def data_total() -> list[Total]:
 
 class PageState(rx.State):
     
-    user_cookie: str = rx.Cookie(name="user_cookie")
+    user_cookie: str = rx.Cookie(name="user_cookie", max_age=1800)
     total_info:list[Total]
     usuarios_info:list[Usuarios]
     fecha: str = ""
@@ -62,10 +74,15 @@ class PageState(rx.State):
     semana:str = "semana1"
     fecha_actual = datetime.now()
     limite_recuperacion = timedelta(hours=24)
-    user_clase = ""
-    fecha_seleccion_horarios = ""
-    seleccionar_hora = ""
+    user_clase:str = ""
+    fecha_seleccion_horarios:str = ""
+    seleccionar_hora:str = ""
     is_loading: bool = True
+    nombre:str= ""
+    switch:bool= False
+    color_switch:str=""
+    
+
     
     def siguiente(self):
         if self.semana == "semana1" :
@@ -102,16 +119,43 @@ class PageState(rx.State):
     def handle_submit(self, form_data: dict):
         self.fecha = form_data["select"]
         
-    
+    def switched(self, checked: bool):
+        self.switch = checked    
+        if self.switch:
+            self.color_switch = "green"
+        else:
+            self.color_switch = "black"
+        
     def insertar_usuario(self, form_data: dict):
-        for i in self.total_info:
-            if i.hora == self.seleccionar_hora and i.fecha == self.fecha_seleccion_horarios:
-                supabase.agregar_usuario_a_horario(i.id, self.user_clase, False)
+                
+        
+        if self.switch:
+            dia = ""
+            for i in self.total_info:
+                if i.fecha == self.fecha_seleccion_horarios:
+                    dia =i.dia
+                    
+            for i in self.total_info:
+                if i.dia == dia and i.hora == self.seleccionar_hora and i.id < 53:
+                    supabase.agregar_usuario_a_horario(i.id, self.user_clase, False)    
+        else:
+            for i in self.total_info:
+                if i.hora == self.seleccionar_hora and i.fecha == self.fecha_seleccion_horarios:
+                    supabase.agregar_usuario_a_horario(i.id, self.user_clase, False)
+                    
         
     def remover_usuario(self, form_data: dict):
-        for i in self.total_info:
-            if i.hora == self.seleccionar_hora and i.fecha == self.fecha_seleccion_horarios and self.user_clase in i.mails:
+        
+        
+        if self.switch:
+            for i in self.total_info:
                 supabase.eliminar_usuario_a_horario(i.id, self.user_clase, False)
+                
+        else:
+            for i in self.total_info:
+                if i.hora == self.seleccionar_hora and i.fecha == self.fecha_seleccion_horarios and self.user_clase in i.mails:
+                    supabase.eliminar_usuario_a_horario(i.id, self.user_clase, False)
+                    
         
     def load_data(self):
         try:
@@ -220,6 +264,7 @@ class PageState(rx.State):
                 result = i.trigger_alert 
         return result
     
+
     @rx.var
     def obtener_clases_user(self) -> list : 
         
@@ -291,21 +336,41 @@ class PageState(rx.State):
         return total_list_sorted
     
     @rx.var
-    def in_clase(self):
+    def in_clase(self) -> list[Total]:
         result = []
+        user = self.user_cookie.title() if self.user_cookie else ""
+
         for i in self.total_info:
-            if self.user_cookie in i.mails:
-                result.append(i)
+            # Contar cuántas veces aparece el usuario en `i.mails`
+            count = i.mails.count(user)
+            # Agregar `i` a `result` tantas veces como el usuario aparezca
+            result.extend([i] * count)
+
         return result
+    
+    @rx.var
+    def no_tiene_clases(self)->int:
+        result = 0
+        user= ""
+        if self.user_cookie:
+            user = self.user_cookie
+        else:
+            user= ""    
+        for i in self.total_info:
+            if user.title() in i.mails:
+                result += 1
+        return result    
+
     
     @rx.var
     def hay_clases(self) -> list[Total]:
         result=[]
         my_set= set()
         for i in self.total_info:
-            if i.lugar_disponible > 0 and i.semana == self.semana and i.lugar_disponible not in my_set:
+            if i.lugar_disponible > 0 and len(i.mails) < 5  and i.semana == self.semana and i.fecha not in my_set and self.tiempo_hasta_clase[i.id - 1] > 0:
                 result.append(i)
-                my_set.add(i.lugar_disponible)
+                my_set.add(i.fecha)
+        
         return result
     
     @rx.var
@@ -319,21 +384,32 @@ class PageState(rx.State):
                 
     @rx.var
     def list_personas(self) -> list[str]:
-
-        result = [i.fullname for i in self.usuarios_info]
+        result = []
+        
+        for i in self.usuarios_info:
+            if self.nombre.title() in i.fullname:
+                result.append(i.fullname)
         result.sort()
-        return result   
-
+        return result    
     
-    def add_usuario(self, nuevo_usuario: Usuarios):
+    def seleccionar_usuario(self, user):
+        self.nombre = ""
+        self.user_clase = user
+    
+    @rx.var
+    def clase_pasada(self) -> int:
+        for i in self.total_info:
+            fecha_recuperar = datetime.strptime(i.fecha, "%d/%m")
+            hora_recuperar = datetime.strptime(i.hora, "%H:%M")
+            if fecha_recuperar == i.fecha and hora_recuperar == i.hora:
+                fecha_clase = datetime(self.fecha_actual.year, fecha_recuperar.month, fecha_recuperar.day,
+                                                hora_recuperar.hour, hora_recuperar.minute)  
+                result= fecha_clase - PageState.fecha_actual
+                result = int(result)
+                return result
+    
 
-        self.usuarios_info.append(nuevo_usuario)
-        self.usuarios_info.sort(key=lambda x: x.fullname) 
-        
 
-                
-
-        
 class ReservaCancela(rx.State):
     
     async def reset_database(self):
@@ -342,6 +418,10 @@ class ReservaCancela(rx.State):
     
     async def eliminar_usuario_de_bd(self, id, user_uid):
         eliminar = eliminar_usuario_de_bdd(id, user_uid)
+        return eliminar
+    
+    async def eliminar_de_las_clases(self, user):
+        eliminar = eliminar_de_las_clasess(user)
         return eliminar
     
     async def eliminar_usuario(self, id, user, parametro):
@@ -365,11 +445,30 @@ class ReservaCancela(rx.State):
         derecha = desplazando_derecha()
         return derecha
     
+    async def aumentar_clases_disponible(self, id):
+        aumentar = aumentar_clases_disponible(id)
+        return aumentar
+    
+    async def disminuir_clases_disponible(self, id):
+        disminuir = disminuir_clases_disponible(id)
+        return disminuir
+    
+    async def aumentar_lugar_disponible(self, id):
+        aumentar = aumentar_lugar_disponible(id)
+        return aumentar
+    
+    async def disminuir_lugar_disponible(self, id):
+        disminuir = disminuir_lugar_disponible(id)
+        return disminuir
+    
 def reset_databasee():
     supabase.reset_data_base()
 
 def eliminar_usuario_de_bdd(id, user_uid):
     supabase.eliminar_usuario_de_bd(id, user_uid)
+    
+def eliminar_de_las_clasess( user):
+    supabase.eliminar_de_las_clases(user)
     
 def eliminar_usuarioo(id, user, parametro):
     supabase.eliminar_usuario_a_horario(id, user, parametro)
@@ -385,6 +484,18 @@ def desplazando_izquierda():
     
 def desplazando_derecha():
     supabase.desplazando_derecha()
+
+def aumentar_clases_disponible(id):
+    supabase.aumentar_clases_disponible(id)
+
+def disminuir_clases_disponible(id):
+    supabase.disminuir_clases_disponible(id)
+
+def aumentar_lugar_disponible(id):
+    supabase.aumentar_lugar_disponible(id)
+
+def disminuir_lugar_disponible(id):
+    supabase.disminuir_lugar_disponible(id)
 
 
 class ButtonState(rx.State):
@@ -427,11 +538,12 @@ class ButtonState(rx.State):
             self.show_text_jueves = False
             self.show_text_viernes = not self.show_text_viernes
         
-
+    
 class Login(rx.State):
 
-    mi_cookie: str = rx.Cookie(name="cookie")
+    mi_cookie: str = rx.Cookie(name="cookie", max_age=1800)
     palabras = []
+    mensaje_link =""
     
     #errores
     error_de_crear = ""
@@ -440,6 +552,9 @@ class Login(rx.State):
     error_cond_crear = False
     check_cond_crear = False
     mensaje_contraseña = False
+    cond_link_correcto = False
+    cond_link_incorrecto = False
+    cond_link_error = False
     
     #fullname propiedades
     fullname_value = ""
@@ -456,6 +571,7 @@ class Login(rx.State):
     email_value_login = ""
     email_underline = "2px solid white"
     email_underline_color = "white"  
+    email_underline_color_login = "white"
     
     # password propiedades
     password_width_register = "0px"
@@ -521,6 +637,10 @@ class Login(rx.State):
         self.cond_contraseña_check = False
         self.cond_contraseña = False
         self.mensaje_contraseña = False
+        self.cond_contraseña_fall = False
+        self.cond_contraseña_check = False
+        self.cond_contraseña = False
+        self.cond_link_error = False
         box_width_register = "60px"
         box_height_register = "60px"
         box_width_login = "60px"
@@ -543,6 +663,53 @@ class Login(rx.State):
         self.box_width_login = "350px"
         self.email_width_login = "300px"
         
+    def agrandar_hasta_boton(self):
+        if self.password_value_confirm == "":
+            self.password_underline_color_confirm = "white"
+            self.box_height_register = "210px"
+        elif self.password_value_confirm == self.password_value_register:
+            self.password_underline_color_confirm = "green"
+            self.box_height_register = "300px"
+            self.cond_create_user = True
+        else:
+            self.password_underline_color_confirm = "red"
+            self.box_height_register = "210px"
+            
+    def agrandar_hasta_contraseña(self):
+        if self.password_value_register == "":
+            self.password_underline_color = "white"
+            self.box_height_register = "165px"
+            self.password_width_confirm = "0px"  
+            self.mensaje_contraseña = False
+        elif len(self.password_value_register) >= 6:
+            self.password_underline_color = "green"
+            self.box_height_register = "210px"
+            self.password_width_confirm = "300px" 
+            self.mensaje_contraseña = False
+            
+            self.agrandar_hasta_boton()
+        else:
+            self.mensaje_contraseña = True
+            self.password_underline_color = "red"
+            self.box_height_register = "165px"
+            self.password_width_confirm = "0px"  
+    
+    def agrandar_hasta_login(self):
+        if self.password_value_login == "":
+            self.password_underline_color = "white"
+            self.box_height_login = "120px"
+            self.password_width_confirm = "0px"  
+        elif len(self.password_value_login) >= 6:
+            self.password_underline_color = "green"
+            self.box_height_login = "210px"
+            self.password_width_confirm = "300px" 
+        else:
+            self.password_underline_color = "red"
+            self.box_height_login = "120px"
+            self.password_width_confirm = "0px" 
+    
+    
+        
     def on_fullname(self, fullname):
         
         self.fullname_value= fullname
@@ -556,6 +723,20 @@ class Login(rx.State):
             self.box_height_register = "110px"
             self.email_width_register = "300px"
             self.email_underline = "2px solid white"
+            
+            if any(
+            domain in self.email_value_register
+            for domain in ("@gmail.com", "@hotmail.com", "@hotmail.es", "@live.com", "@yahoo.com", "@edenor.com", "@outlook.com")
+            ):
+                self.email_underline_color = "green"
+                self.box_height_register = "165px"
+                self.password_width_register = "300px"
+                self.password_underline = "2px solid white"
+                
+                self.agrandar_hasta_contraseña()
+            else:
+                self.email_underline_color = "red"
+                self.box_height_register = "110px"
         else:
             self.fullname_underline_color = "red"
             self.box_height_register = "60px"
@@ -568,31 +749,38 @@ class Login(rx.State):
             self.box_height_register = "110px"
         elif any(
             domain in self.email_value_register
-            for domain in ("@gmail.com", "@hotmail.com", "@live.com", "@yahoo.com", "@edenor.com")
+            for domain in ("@gmail.com", "@hotmail.com", "@hotmail.es", "@live.com", "@yahoo.com", "@edenor.com", "@outlook.com", "@fibertel.com")
         ):
             self.email_underline_color = "green"
             self.box_height_register = "165px"
             self.password_width_register = "300px"
             self.password_underline = "2px solid white"
+            
+            self.agrandar_hasta_contraseña()
+            
         else:
             self.email_underline_color = "red"
             self.box_height_register = "110px"
     
     def on_check_email_login(self, email_value_login):
+        
         self.email_value_login = email_value_login
         if self.email_value_login == "":
-            self.email_underline_color = "white"
+            self.email_underline_color_login = "white"
             self.box_height_login = "60px"
         elif any(
             domain in self.email_value_login
-            for domain in ("@gmail.com", "@hotmail.com", "@live.com", "@yahoo.com", "@edenor.com")
+            for domain in ("@gmail.com", "@hotmail.com", "@hotmail.es", "@live.com", "@yahoo.com", "@edenor.com", "@outlook.com", "@fibertel.com")
         ):
-            self.email_underline_color = "green"
+            self.email_underline_color_login = "green"
             self.box_height_login = "120px"
             self.password_width_login = "300px"
-            self.password_underline = "2px solid white"
+            self.password_underline = "2px solid white" 
+                
+            self.agrandar_hasta_login()
+                 
         else:
-            self.email_underline_color = "red"
+            self.email_underline_color_login = "red"
             self.box_height_login = "60px"
     
     def on_check_password_contraseña(self, contraseña_value):
@@ -613,21 +801,7 @@ class Login(rx.State):
     def on_check_password_register(self, password_value):
         self.password_value_register = password_value
         
-        if self.password_value_register == "":
-            self.password_underline_color = "white"
-            self.box_height_register = "165px"
-            self.password_width_confirm = "0px"  
-            self.mensaje_contraseña = False
-        elif len(password_value) >= 6:
-            self.password_underline_color = "green"
-            self.box_height_register = "210px"
-            self.password_width_confirm = "300px" 
-            self.mensaje_contraseña = False
-        else:
-            self.mensaje_contraseña = True
-            self.password_underline_color = "red"
-            self.box_height_register = "165px"
-            self.password_width_confirm = "0px"  
+        self.agrandar_hasta_contraseña()
     
     def on_check_password_confirm_contraseña(self, contraseña_value_confirm):
         self.contraseña_value_confirm = contraseña_value_confirm
@@ -644,31 +818,11 @@ class Login(rx.State):
     
     def on_check_password_login(self, password_value_login):
         self.password_value_login = password_value_login
-        if self.password_value_login == "":
-            self.password_underline_color = "white"
-            self.box_height_login = "120px"
-            self.password_width_confirm = "0px"  
-        elif len(password_value_login) >= 6:
-            self.password_underline_color = "green"
-            self.box_height_login = "210px"
-            self.password_width_confirm = "300px" 
-        else:
-            self.password_underline_color = "red"
-            self.box_height_login = "120px"
-            self.password_width_confirm = "0px"  
+        self.agrandar_hasta_login()
             
     def on_check_password_confirm(self, password_value_confirm):
         self.password_value_confirm = password_value_confirm
-        if self.password_value_confirm == "":
-            self.password_underline_color_confirm = "white"
-            self.box_height_register = "210px"
-        elif self.password_value_confirm == self.password_value_register:
-            self.password_underline_color_confirm = "green"
-            self.box_height_register = "300px"
-            self.cond_create_user = True
-        else:
-            self.password_underline_color_confirm = "red"
-            self.box_height_register = "210px"
+        self.agrandar_hasta_boton()
     
     def user_sign_in(self):
 
@@ -679,7 +833,6 @@ class Login(rx.State):
         except Exception as e:
             self.error_cond_login = True
             self.error_login = "Autenticacion invalida. Verifice mail y/o contraseña"
-            print(e)
             
     def cambiar_contraseña(self):
         
@@ -699,66 +852,138 @@ class Login(rx.State):
                 self.contraseña_alert = "Lo sentimos surgió un error, inicie sesión nuevamente para cambiar la contraseña"
                 self.cond_contraseña_fall = True
                 self.cond_contraseña_check = False 
-                print(e)
                 return error_momentaneo()
             else:
                 self.contraseña_alert = "La contraseña nueva es igual a la anterior"
                 self.cond_contraseña_fall = True
                 self.cond_contraseña_check = False 
-                print(e)
                 return error_momentaneo()
 
 
     def registrar_user_submit(self):
-        fullname = self.fullname_value.title()
-        try:
-            existing_user = supabase.supabase.table("usuarios").select("*").eq("usuario", self.email_value_register).execute()
-            if existing_user.data:
-                return False
+        
+        response = supabase.supabasee.auth.admin.list_users()
+        mails_list = []
+        for i in response:
+            mails_list.append(i.email)
+
+        if self.email_value_register not in mails_list:
+            try:
+                fullname = self.fullname_value.title()
+                existing_user = supabase.supabase.table("usuarios").select("*").eq("usuario", self.email_value_register).execute()
+                if existing_user.data:
+                    return False
+                response = supabase.supabase.auth.sign_up(
+                    credentials={
+                        "email": self.email_value_register,
+                        "password": self.password_value_register,
+                        "options": {"data": {"fullname": fullname}},
+                    }
+                )
+                usuarios_data = supabase.data_usuarios()
+                ids = [item.id for item in usuarios_data]
+                new_id = max(ids) + 1 if ids else 1
+                data = supabase.supabase.table("usuarios").insert({
+                    "id": new_id,
+                    "usuario": self.email_value_register,
+                    "fullname":fullname,
+                    "user_uid":response.user.user_metadata["sub"],
+                    "clases_disponibles": 0,
+                    "recuperar": 0,
+                    "trigger_alert": 0,
+                }).execute()
+                self.check_cond_crear = True
+                self.error_cond_crear = False
+                self.error_de_crear = "Revise su correo electronico y haga click en el link para autenticarse"
+                return check_momentaneo()
+                
+            except Exception as e:
+                self.error_cond_crear = True
+                self.check_cond_crear = False
+                self.error_de_crear = f"Por ahora se puede crear un usuario por hora. Debes esperar hasta que se libere el cupo. Para tener en cuenta el tipo de error es : {e}"
+                return error_momentaneo()
+        else:
+            self.error_cond_crear = True
+            self.check_cond_crear = False
+            self.error_de_crear = "Este usuario ya creo su cuenta, revise su mail y haga click en el link de verificacion"
+            return error_momentaneo()
+        
+
             
-            response = supabase.supabase.auth.sign_up(
-                credentials={
-                    "email": self.email_value_register,
-                    "password": self.password_value_register,
-                    "options": {"data": {"fullname": fullname}},
+
+
+    def enviar_magic_link(self, form_data: dict):
+        try:
+            response = supabase.supabase.auth.sign_in_with_otp(
+                {
+                    'email': form_data["email"],
+                    'type': 'magiclink',
+                    'options': {
+                        'emailRedirectTo': 'https://ceramica.reflex.run/'
+                    }
                 }
             )
             
-            usuarios_data = supabase.data_usuarios()
-            ids = [item.id for item in usuarios_data]
-            new_id = max(ids) + 1 if ids else 1
-            
-            supabase.supabase.table("usuarios").insert({
-                "id": new_id,
-                "usuario": self.email_value_register,
-                "fullname": fullname,  
-                "user_uid": response.user.user_metadata["sub"],
-                "clases_disponibles": 0,
-                "recuperar": 0,
-                "trigger_alert": 0,
-            }).execute()
-
-            PageState.add_usuario(Usuarios(
-                id=new_id,
-                usuario=self.email_value_register,
-                fullname=fullname,
-                user_uid=response.user.user_metadata["sub"],
-                clases_disponibles=0,
-                recuperar=0,
-                trigger_alert=0,
-            ))
-
-            self.check_cond_crear = True
-            self.error_cond_crear = False
-            self.error_de_crear = "Revise su correo electronico y haga click en el link para autenticarse"
-            return check_momentaneo()
-
+            if 'error' not in response:
+                self.mensaje_link= f"Link de autenticacion enviado a {form_data["email"]}"
+                self.cond_link_incorrecto = False
+                self.cond_link_error = False
+                self.cond_link_correcto = True
+            else:
+                self.mensaje_link=f"Viejita hubo un problema al enviar el link. ni yo se cual podra ser el error asi que mandame por wpp esto: {response['error']}"
+                self.cond_link_correcto = False
+                self.cond_link_error = False
+                self.cond_link_incorrecto = True
+                
         except Exception as e:
-            self.check_cond_crear = False
-            self.error_cond_crear = True
-            self.error_de_crear = f"Hubo un problema al registrar el usuario. Nombre del error : {e}"
-            return error_momentaneo()
+            self.mensaje_link=f'Viejita probablemente hayas llegado al limite para enviar links. Pero en concreto el error es: ({e}). Si no dice  "email rate limit exceeded" intenta devuelta, fijate de que no hayan espacios de mas, y por las dudas volve a inicar sesión.'
+            self.cond_link_correcto = False
+            self.cond_link_incorrecto = False
+            self.cond_link_error = True
 
+class RestablecerContraseña(Login):
+    
+    def open_box_contraseña(self):
+        self.box_width_contraseña = "210px"
+        self.contraseña_width_register = "155px"
+        self.contraseña_width = "155px"
+        self.email_width_register = "155px"
+        
+        
+    def on_check_email_register(self, email_value_register):
+        self.email_value_register = email_value_register
+        if self.email_value_register == "":
+            self.email_underline_color = "white"
+            self.box_height_register = "110px"
+        elif any(
+            domain in self.email_value_register
+            for domain in ("@gmail.com", "@hotmail.com", "@hotmail.es", "@live.com", "@yahoo.com", "@edenor.com", "@outlook.com")
+        ):
+            self.email_underline_color = "green"
+            self.box_height_register = "165px"
+            self.password_width_register = "300px"
+            self.password_underline = "2px solid white"
+            
+            self.agrandar_hasta_contraseña()
+            
+        else:
+            self.email_underline_color = "red"
+            self.box_height_register = "110px"
+        
+    def on_check_password_contraseña(self, contraseña_value):
+        self.contraseña_value_register = contraseña_value
+        if self.contraseña_value_register == "":
+            self.contraseña_underline_color = "white"
+            self.box_height_contraseña = "60px"
+            self.contraseña_width_confirm = "0px" 
+        elif len(contraseña_value) >= 6:
+            self.contraseña_underline_color = "black"
+            self.box_height_contraseña = "110px"
+            self.contraseña_width_confirm = "155px" 
+        else:
+            self.contraseña_underline_color = "red"
+            self.box_height_contraseña = "60px"
+            self.contraseña_width_confirm = "0px"  
         
 
 class SupaBase():
@@ -769,7 +994,31 @@ class SupaBase():
     KEY: str = os.environ.get("KEY")
     SERVICE_ROLE: str = os.environ.get("SERVICE_ROLE")
 
+    
     supabase: Client = create_client(URL, KEY)
+    supabasee = create_client(URL, SERVICE_ROLE)
+    
+    WPP_SID= os.getenv("WPP_SID")
+    WPP_TOKEN = os.getenv("WPP_TOKEN")
+    
+    client = Client(WPP_SID, WPP_TOKEN)
+    
+    def enviar_wpp(self, text, num):
+        try:
+            from_whatsapp_number = 'whatsapp:+14155238886'
+            to_whatsapp_number = num
+            message_body = text
+
+            message = self.client.messages.create(
+                body=message_body,
+                from_=from_whatsapp_number,
+                to=to_whatsapp_number
+            )
+        except Exception as e:
+            self.enviar_wpp(f"error en la funcion para enviar un wpp. avisarle a manu que el error es : {e}", 'whatsapp:+5491132820164' )
+        
+        
+
 
     def data_total(self) -> list[Total]:
         
@@ -794,7 +1043,30 @@ class SupaBase():
         total_list_sorted.reverse()
         return total_list_sorted
     
-  
+    def data_total2(self) -> list[Total2]:
+        
+        total_class = []
+
+        total = self.supabase.table("total2").select("*").execute()
+        
+        for i in total.data:
+            total_class.append(Total2(id=i["id"], semana=i["semana"], dia=i["dia"], fecha=i["fecha"], hora=i["hora"], mails=i["mails"], lugar_disponible=i["lugar_disponible"]))
+        total_list_sorted = sorted(total_class, key=lambda alumno: alumno.id)
+        return total_list_sorted
+    
+    def decreciente_data_total2(self) -> list[Total2]:
+        
+        total_class = []
+
+        total = self.supabase.table("total2").select("*").execute()
+        
+        for i in total.data:
+            total_class.append(Total2(id=i["id"], semana=i["semana"], dia=i["dia"], fecha=i["fecha"], hora=i["hora"], mails=i["mails"], lugar_disponible=i["lugar_disponible"]))
+        total_list_sorted = sorted(total_class, key=lambda alumno: alumno.id)
+        total_list_sorted.reverse()
+        return total_list_sorted
+    
+        
     def data_usuarios(self) -> list[Usuarios]:
 
         usuarios_class = []
@@ -802,7 +1074,7 @@ class SupaBase():
         usuarios = self.supabase.table("usuarios").select("*").execute()
 
         for i in usuarios.data:
-            usuarios_class.append(Usuarios(id=i["id"], usuario=i["usuario"],fullname=i["fullname"],user_uid=i["user_uid"], clases_disponibles=i["clases_disponibles"], recuperar=i["recuperar"], trigger_alert=i["trigger_alert"], sexo=i["sexo"]))
+            usuarios_class.append(Usuarios(id=i["id"], usuario=i["usuario"],fullname=i["fullname"],user_uid=i["user_uid"], clases_disponibles=i["clases_disponibles"], recuperar=i["recuperar"], trigger_alert=i["trigger_alert"], sexo=i["sexo"], clases_canceladas = i["clases_canceladas"]))
         return usuarios_class
 
 
@@ -828,73 +1100,52 @@ class SupaBase():
                 fecha = lunes + timedelta(days=j)
                 fecha_actualizada = fecha.replace(year=today.year)
                 fechas.append(fecha_actualizada.strftime("%d/%m"))
-        dias_habiles_septiembre = [
-            '02/09', '03/09', '04/09', '05/09', '06/09',
-            '09/09', '10/09', '11/09', '12/09', '13/09',
-            '16/09', '17/09', '18/09', '19/09', '20/09',
-            '23/09', '24/09', '25/09', '26/09', '27/09',
-            '30/09', '01/10', '02/10', '03/10', '04/10',
-            '07/10'
-        ]
+        dias_habiles_septiembre =[
+      '02/12', '03/12', '04/12', '05/12', '06/12',
+      '09/12', '10/12', '11/12', '12/12', '13/12',
+      '16/12', '17/12', '18/12', '19/12', '20/12',
+      '23/12', '24/12', '26/12', '27/12',
+      '30/12', '31/12',
+    ]
+
         return dias_habiles_septiembre
 
     def generar_lista_dias_habiles(self, inicio, fin):
-        # Convertir las fechas de inicio y fin en objetos datetime
-        fecha_inicio = datetime.strptime(inicio, "%d/%m")
-        fecha_fin = datetime.strptime(fin, "%d/%m")
+       
+        now= datetime.now()
+
+        fecha_inicio = datetime.strptime(f"{inicio}/{now.year}", "%d/%m/%Y")
+        fecha_fin = datetime.strptime(f"{fin}/{now.year}", "%d/%m/%Y")
 
         dias_habiles = []
-
-        # Incluir la fecha de inicio si es un día hábil (lunes a viernes)
-        if fecha_inicio.weekday() < 5:  # Si es de lunes (0) a viernes (4)
-            if fecha_inicio.weekday() == 0:  # Si es lunes, añadir solo una vez
-                dias_habiles.append(fecha_inicio.strftime("%d/%m"))
-            else:  # Si es martes a viernes, añadir tres veces
-                dias_habiles.extend([fecha_inicio.strftime("%d/%m")] * 3)
-
-        # Iterar sobre los días en el rango, empezando con el día inicial ya ajustado
+        
         while fecha_inicio <= fecha_fin:
-            # Si es lunes, añadir solo una vez
-            if fecha_inicio.weekday() == 0:  # 0 es lunes
+           
+            if fecha_inicio.weekday() == 0: 
                 dias_habiles.append(fecha_inicio.strftime("%d/%m"))
-            # Si es de martes a viernes, añadir tres veces
-            elif 1 <= fecha_inicio.weekday() <= 4:  # 1 a 4 son martes a viernes
+            
+            elif 0 < fecha_inicio.weekday() <= 4:  
                 dias_habiles.extend([fecha_inicio.strftime("%d/%m")] * 3)
             
-            # Pasar al día siguiente
+           
             fecha_inicio += timedelta(days=1)
 
         return dias_habiles
 
-
-
-    def check_user_in_semana(self, user, semana):
-        check_semana = []
-        for i in self.data_usuarios():
-            if i.fullname == user and semana in i.semanas:
-                check_semana.append(semana)
-        if len(check_semana) > 0 :
-            return False
-        return True
-    
-            
-
-            
-    
-    def actualizar_fecha(self, id):
-        for index, i in enumerate(self.obtener_fechas_proximas_semanas()):
-            if index + 1 == id:
-                return i
-        
+ 
+ 
     
     def cant_clases_usuario(self, user):
 
-        try:
-            for i in self.data_usuarios():
-                if user == i.fullname:
-                    return i.clases_disponibles
-        except Exception as e:
-            print(f"error {e} en la funciopn cant_clases_usuario")
+        for i in self.data_usuarios():
+            if user == i.fullname:
+                return i.clases_disponibles
+    
+    def cant_recuperar_usuario(self, user):
+
+        for i in self.data_usuarios():
+            if user == i.fullname:
+                return i.recuperar
     
     def recuperar_clase(self, user):
         recupera = 0
@@ -920,6 +1171,30 @@ class SupaBase():
         for i in self.data_usuarios():
             if i.fullname == usuario:
                 return i.trigger_alert      
+    
+    def clases_canceladas_con_usuario(self, usuario, clase_cancelada):
+        
+        for i in self.data_usuarios():
+            if i.fullname == usuario:
+                clases_canceladas=i.clases_canceladas
+                clases_canceladas.append(clase_cancelada)
+                return clases_canceladas   
+    
+    def aumentar_clases_disponible(self, id):
+        for i in self.data_usuarios():
+            if i.id == id:
+                clases_disponibles = i.clases_disponibles + 1
+                response = (self.supabase.table("usuarios").update({"clases_disponibles":clases_disponibles}).eq("id", i.id).execute())
+    
+    def disminuir_clases_disponible(self, id):
+        for i in self.data_usuarios():
+            if i.id == id:
+                if i.clases_disponibles > 0:
+                    clases_disponibles = i.clases_disponibles - 1
+                    response = (self.supabase.table("usuarios").update({"clases_disponibles":clases_disponibles}).eq("id", i.id).execute())
+                elif i.recuperar > 0:
+                    recuperar = i.recuperar - 1
+                    response = (self.supabase.table("usuarios").update({"recuperar":recuperar}).eq("id", i.id).execute())                 
             
     
     def rotar_al_final(self):
@@ -928,13 +1203,13 @@ class SupaBase():
             if i.id == 1 :
                 lista1 = i.mails
                 response = (self.supabase.table("total").update({"mails":[]}).eq("id", i.id).execute())
-            if i.id == 54:
+            if i.id == 65:
                 response = (self.supabase.table("total").update({"mails":lista1}).eq("id", i.id).execute()) 
 
     def rotar_al_principio(self):
         lista1=[]
         for i in self.decreciente_data_total():
-            if i.id == 54 :
+            if i.id == 65 :
                 lista1 = i.mails
                 response = (self.supabase.table("total").update({"mails":[]}).eq("id", i.id).execute())
             if i.id == 1:
@@ -957,77 +1232,120 @@ class SupaBase():
     def desplazando_derecha(self):
         self.uno_a_la_derecha()
         self.rotar_al_principio()  
+        
+    def aumentar_lugar_disponible(self, id):
+        for i in self.data_total():
+            if i.id == id:
+                lugares = i.lugar_disponible
+                lugares += 1
+                response = (self.supabase.table("total").update({"lugar_disponible": lugares}).eq("id", i.id).execute())
+    
+    def disminuir_lugar_disponible(self, id):
+        for i in self.data_total():
+            if i.id == id:
+                if i.lugar_disponible > 0:
+                    lugares = i.lugar_disponible
+                    lugares -= 1
+                    response = (self.supabase.table("total").update({"lugar_disponible": lugares}).eq("id", i.id).execute())
+    
     
     def agregar_usuario_a_horario(self, id, user, parametro):
-        if user :
-            for data in self.data_total():
-                if data.id == id:
-                    if user not in data.mails:
-                        if self.cant_clases_usuario(user) > 0 or self.recuperar_clase(user) > 0 or not parametro:
-                            alumnos = data.mails
-                            alumnos.append(user)
-                            lugar_disponible = data.lugar_disponible
-                            lugar_disponible -= 1
-                            response = (self.supabase.table("total").update({"mails": alumnos}).eq("id", id).execute())
-                            if parametro:    
-                                response = (self.supabase.table("total").update({"lugar_disponible": lugar_disponible}).eq("id", id).execute())
-                            if self.cant_clases_usuario(user) > 0:
-                                response = (self.supabase.table("usuarios").update({"clases_disponibles": self.cant_clases_usuario(user) - 1}).eq("id", self.id_usuario(user)).execute())
-                            for i in self.data_usuarios():
-                                if user == i.fullname and i.recuperar > 0:
-                                    response = (self.supabase.table("usuarios").update({"recuperar": self.recuperar_clase(user) - 1}).eq("id", self.id_usuario(user)).execute())
-        else: 
-            return False
+        
+        for i in self.data_usuarios():
+            if i.fullname == user:
+                if user :
+                    for data in self.data_total():
+                        if data.id == id:
+                            if user not in data.mails or user == "Agustina Garcia ":
+                                if self.cant_clases_usuario(user) > 0 or self.recuperar_clase(user) > 0 or not parametro:
+                                    self.enviar_wpp(f"{user} se ha sumado a la clase del dia {data.dia} {data.fecha} a las {data.hora}", 'whatsapp:+5491132820164')
+                                    self.enviar_wpp(f"{user} se ha sumado a la clase del dia {data.dia} {data.fecha} a las {data.hora}", 'whatsapp:+5491134272488')
+                                    alumnos = data.mails
+                                    alumnos.append(user)
+                                    lugar_disponible = data.lugar_disponible
+                                    lugar_disponible -= 1
+                                    response = (self.supabase.table("total").update({"mails": alumnos}).eq("id", id).execute())
+                                    if data.lugar_disponible > 0:
+                                        response = (self.supabase.table("total").update({"lugar_disponible": lugar_disponible}).eq("id", id).execute())
+                                    if self.cant_clases_usuario(user) > 0:
+                                        response = (self.supabase.table("usuarios").update({"clases_disponibles": self.cant_clases_usuario(user) - 1}).eq("id", self.id_usuario(user)).execute())
+                                        pass
+                                    elif self.cant_recuperar_usuario(user) > 0:
+                                        response = (self.supabase.table("usuarios").update({"recuperar": self.recuperar_clase(user) - 1}).eq("id", self.id_usuario(user)).execute())
+                                        pass
+                            else: print(f"{user} no a ingresado a la clase") 
+     
+        
                 
     def eliminar_usuario_de_bd(self, id, user_uid):
+        try:
+            user = ""
+            for i in self.data_usuarios():
+                if i.id == id:
+                    user = i.fullname
+            for i in self.data_total():
+                    if user in i.mails:
+                        usuarios = i.mails
+                        usuarios.remove(user)
+                        response = (supabase.supabase.table("total").update({"mails": usuarios}).eq("id", i.id).execute())
+
+            response = self.supabase.table('usuarios').delete().eq('id', id).execute()
+            
+            url = f"{self.URL}/auth/v1/admin/users/{user_uid}"
+            headers = {
+                "Authorization": f"Bearer {self.SERVICE_ROLE}",
+                "apikey": self.SERVICE_ROLE, 
+                "Content-Type": "application/json"
+            }
+            response_auth = requests.delete(url, headers=headers)
+        except Exception as e:
+            supabase.enviar_wpp(f'Ocurrio un error en la funcion "eliminar_usuario_de_bd" Avisale a Manu por favor. El error en cuestion es {e}', 'whatsapp:+5491132820164')
+
+            
         
-        response = self.supabase.table('usuarios').delete().eq('id', id).execute()
-        
-        url = f"{self.URL}/auth/v1/admin/users/{user_uid}"
-        headers = {
-            "Authorization": f"Bearer {self.SERVICE_ROLE}",
-            "apikey": self.SERVICE_ROLE, 
-            "Content-Type": "application/json"
-        }
-        response = requests.delete(url, headers=headers)
+    def eliminar_de_las_clases(self, user):
+        for i in data_total():
+                if user in i.mails:
+                    usuarios = i.mails
+                    usuarios.remove(user)
+                    response = (supabase.supabase.table("total").update({"mails": usuarios}).eq("id", i.id).execute())
+
+                
+            
 
 
 
     def eliminar_usuario_a_horario(self, id, user, parametro):
         
-        for data in self.data_total():
-            if data.id == id:
-                if user in data.mails:
-                    alumnos = data.mails
-                    alumnos.remove(user)
-                    lugar_disponible = data.lugar_disponible
-                    lugar_disponible += 1
-                    if parametro:
-                        response = (self.supabase.table("total").update({"lugar_disponible": lugar_disponible}).eq("id", id).execute())
-                    response = (self.supabase.table("total").update({"mails": alumnos}).eq("id", id).execute())
-                    if self.fecha_hora_recuperar(id, user) and parametro:
-                        response = (self.supabase.table("usuarios").update({"recuperar": self.recuperar_con_usuario(user) + 1}).eq("id", self.id_usuario(user)).execute())
-                        if self.trigger_alert_con_usuario(user) > 0 :
-                            response = (self.supabase.table("usuarios").update({"trigger_alert": 0}).eq("id", self.id_usuario(user)).execute())
+
+                for i in self.data_usuarios():
+                    if i.fullname == user:
+                        for data in self.data_total():
+                            if data.id == id:
+                                if user in data.mails:
+                                    self.enviar_wpp(f"{user} ah cancelado la clase del dia {data.dia} {data.fecha} a las {data.hora}", 'whatsapp:+5491132820164')
+                                    self.enviar_wpp(f"{user} ah cancelado la clase del dia {data.dia} {data.fecha} a las {data.hora}", 'whatsapp:+5491134272488')
+                                    alumnos = data.mails
+                                    alumnos.remove(user)
+                                    lugar_disponible = data.lugar_disponible
+                                    lugar_disponible += 1
+                                    response = (self.supabase.table("total").update({"mails": alumnos}).eq("id", id).execute())
+                                    if len(data.mails) < 5:
+                                        response = (self.supabase.table("total").update({"lugar_disponible": lugar_disponible}).eq("id", id).execute())
+                                    if self.fecha_hora_recuperar(id, user) and parametro:
+                                        response = (self.supabase.table("usuarios").update({"recuperar": self.recuperar_con_usuario(user) + 1}).eq("id", self.id_usuario(user)).execute())
+                                    else:
+                                        if parametro:
+                                            response = (self.supabase.table("usuarios").update({"trigger_alert": self.trigger_alert_con_usuario(user) + 1}).eq("id", self.id_usuario(user)).execute()) 
+                                            response = (self.supabase.table("usuarios").update({"clases_canceladas": self.clases_canceladas_con_usuario(user, f"{data.dia} {data.fecha} a las {data.hora}")}).eq("id", self.id_usuario(user)).execute())       
     
-   
     
     def sign_out(self):
         return [rx.remove_cookie("mi_cookie"), rx.remove_cookie("user_cookie")]
     
     def agregar_fechas_constantemente(self):
-        for index, i in enumerate([
-                '02/09', '03/09', '03/09', '03/09', '04/09', '04/09', '04/09',
-                '05/09', '05/09', '05/09', '06/09', '06/09', '06/09', '09/09',
-                '10/09', '10/09', '10/09', '11/09', '11/09', '11/09', '12/09',
-                '12/09', '12/09', '13/09', '13/09', '13/09', '16/09', '17/09',
-                '17/09', '17/09', '18/09', '18/09', '18/09', '19/09', '19/09',
-                '19/09', '20/09', '20/09', '20/09', '23/09', '24/09', '24/09',
-                '24/09', '25/09', '25/09', '25/09', '26/09', '26/09', '26/09',
-                '27/09', '27/09', '27/09', '30/09', '01/10', '01/10', '01/10',
-                '02/10', '02/10', '02/10', '03/10', '03/10', '03/10', '04/10',
-                '04/10', '04/10', '07/10'
-            ]):
+        for index, i in enumerate(self.generar_lista_dias_habiles("02/12", "31/12")
+):
             response = (self.supabase.table("total").update({"fecha": i }).eq("id", index+1).execute())
                 
     
@@ -1042,33 +1360,37 @@ class SupaBase():
                 fecha_clase = datetime(fecha_actual.year, fecha_recuperar.month, fecha_recuperar.day,
                                     hora_recuperar.hour, hora_recuperar.minute)   
                         
-                diferencia_tiempo = fecha_clase - fecha_actual                
+                diferencia_tiempo = fecha_clase - fecha_actual  
                 if diferencia_tiempo >= limite_recuperacion:
-                    return True
-                
-                response = (self.supabase.table("usuarios").update({"trigger_alert": self.trigger_alert_con_usuario(user) + 1}).eq("id", self.id_usuario(user)).execute())
+                    return True   
                 return False
     
-    def reset_data_base(self):
-        for i in self.data_total():
-            response = (self.supabase.table("total").update({"mails": []}).eq("id", i.id).execute())
-            response = (self.supabase.table("total").update({"lugar_disponible":0}).eq("id", i.id).execute())
+    # def reset_data_base(self):
+    #     for i in self.data_total():
+            # response = (self.supabase.table("total").update({"mails": []}).eq("id", i.id).execute())
+            # response = (self.supabase.table("total").update({"lugar_disponible":0}).eq("id", i.id).execute())
+            # response = (supabase.supabase.table("usuarios").update({"clases_canceladas": []}).eq("id", i.id).execute())
             
               
-supabase = SupaBase()        
+supabase = SupaBase()   
 
+# supabase.reset_data_base()
 
-# for i in supabase.data_total():    
-#     supabase.supabase.table("total2").update({"semana":i.semana}).eq("id", i.id ).execute()
-#     supabase.supabase.table("total2").update({"fecha":i.fecha}).eq("id", i.id  ).execute()
-#     supabase.supabase.table("total2").update({"hora":i.hora}).eq("id", i.id ).execute()
-#     supabase.supabase.table("total2").update({"dia":i.dia}).eq("id", i.id ).execute()
-#     supabase.supabase.table("total2").update({"mails":i.mails}).eq("id", i.id ).execute()
-    
+# supabase.agregar_fechas_constantemente()
 
-    
+# data = supabase.supabase.table("usuarios").insert({
+#                     "id": 107,
+#                     "usuario": "ale_arata@fibertel.com.ar",
+#                     "fullname":"Alejandra Arata",
+#                     "user_uid":"110ed60d-11b6-4134-84b6-a8fed3ed977c",
+#                     "clases_disponibles": 0,
+#                     "recuperar": 0,
+#                     "trigger_alert": 0,
+#                 }).execute()
 
-
+# response = supabase.supabasee.auth.sign_up(
+#     {"phone": "+541134272488", "password": "123456"}
+# )
 
 # def identificar_dia_inicial(mes, año):
 #     # Crear una fecha para el primer día del mes
@@ -1079,10 +1401,22 @@ supabase = SupaBase()
 # now = datetime.now()
 # # Ejemplo de uso
 # dia_inicial = identificar_dia_inicial(now.month, now.year)
+  
 
 # print(dia_inicial)
 # dias_semana = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 # print(f"El día inicial de {now.month}/{now.year } es {dias_semana[dia_inicial]}.")
+
+# now = datetime.now()
+# def tiempo_hasta_clase():
+#         año_actual = now.year
+#         return [
+#             (datetime.strptime(f"{año_actual}/{item.fecha} {item.hora}", "%Y/%d/%m %H:%M") - now).total_seconds() / 3600
+#             for item in supabase.data_total()
+#         ]
+# print(tiempo_hasta_clase()[15])
+
+
 @rx.page(
     title="index",
     description="Taller de cerámica",
@@ -1123,8 +1457,7 @@ def turnos() -> rx.Component:
     return rx.box(
         navbar(),
         rx.vstack(
-        mostrar_conexion(),
-        box_marron("Para inscribirse a una clase haga click en un boton que este disponible"),
+        box_marron("Para inscribirse a una clase haga click en un boton que este disponible", "auto"),
         margin_top=Size.VERY_SMALL.value
         ),
         rx.center(
@@ -1151,13 +1484,12 @@ def turnos() -> rx.Component:
 )
 def mis_horarios():
     return rx.box(
+        navbar(),
         rx.center(
             rx.vstack(
-                navbar(),
-                mostrar_conexion(),
                 alert(),
                 total_horarios_para_cancelar(),
-                proxima_clase_info(),
+                # proxima_clase_info(),
                 width = "100%"  
             )
         )
@@ -1175,19 +1507,14 @@ def mis_horarios():
               Login.close_box_contraseña
             ])
 def gestion_horarios():
-    return rx.vstack(
+    return rx.box(
         navbar(),
-        mostrar_conexion(),
         rx.vstack(
             rx.hstack(
-                box_marron("Gestion de horarios"),
+                box_marron("Gestion de horarios", "auto"),
             ),
-            box_marron("En esta seccion podras agregar o eliminar un usuario de una clase: "),
-            form_select_fecha(),
-            rx.hstack(
-                trigger_mover_usuarios(trigger_desplazar_izquierda(),"Cuidado", "Segura queres mover a todos los alumnos a una clase anterior?", "/gestion_horarios",button_mover_izquierda()),
-                trigger_mover_usuarios(trigger_desplazar_derecha(),"Cuidado", "Segura queres mover a todos los alumnos a la clase siguiente?", "/gestion_horarios",button_mover_derecha()),
-            ),
+            box_marron("En esta seccion podras agregar o eliminar un usuario de una clase: ", "auto"),
+            form_select_fecha(True),
             padding_top = "1em",
             margin_x ="1em"
         )
@@ -1203,12 +1530,11 @@ def gestion_horarios():
               Login.close_box_contraseña
             ])
 def usuarios():
-    return rx.vstack(
+    return rx.box(
         navbar(),
-        mostrar_conexion(),
         rx.vstack(
             user_list(),
-            margin_x ="1em"
+            margin_top="2em"
         )
     )       
 
@@ -1226,7 +1552,6 @@ def crear_usuario():
     return rx.box(
         navbar(),
     rx.center(
-        mostrar_conexion(),
         input_create_user(),
         rx.cond(
             Login.error_cond_crear,
@@ -1264,12 +1589,13 @@ def crear_usuario():
 def login():
     return rx.box(
         navbar(),
-        mostrar_conexion(),
-        inputs(),
-        display="grid",
-        position="relative",
-        overflow="hidden",
-        place_items="center",
+        rx.center(
+            inputs(),
+            display="grid",
+            position="relative",
+            overflow="hidden",
+            place_items="center",
+        )
     )
 
 @rx.page(
@@ -1277,6 +1603,7 @@ def login():
     title="configuracion",
     description="Taller de ceramica",
     on_load= [
+        PageState.total,
         PageState.actualizar_user,
         PageState.load_data,
         Login.close_box_contraseña
@@ -1285,23 +1612,60 @@ def configuracion():
     return rx.box(
         navbar(),
         rx.vstack(
-            mostrar_conexion(),
-            rx.cond(Login.mi_cookie,
-                rx.box(
-                    rx.heading(Login.mi_cookie, margin_top="3em"),
-                    input_cambiar_contraseña()
-                    ),
-                primero_login(), 
+            rx.box(
+                rx.text("Configuración de usuario actaulizado"),
+                cambiar_contraseña(Login.mi_cookie),
+                rotar_alumnos()
             )
         )
     )
+    
+
+
+def rotar_alumnos():
+    return rx.box(
+        rx.cond((Login.mi_cookie == "Manuel Navarro") | (Login.mi_cookie == "Ivanna Risaro"),
+                rx.box(
+                    button_magin_link(),
+                    form_select_fecha(False),
+                    rx.hstack(
+                    trigger_mover_usuarios(trigger_desplazar_izquierda(),"Cuidado", "Segura queres mover a todos los alumnos a una clase anterior?", "/gestion_horarios",button_mover_izquierda()),
+                    trigger_mover_usuarios(trigger_desplazar_derecha(),"Cuidado", "Segura queres mover a todos los alumnos a la clase siguiente?", "/gestion_horarios",button_mover_derecha()),
+                    ),
+                )
+            ),
+        ),
+
+def cambiar_contraseña(cond):
+    return rx.box(
+        rx.cond(
+            cond,
+            rx.box(
+                rx.heading(Login.mi_cookie, margin_top="1em"),
+                input_cambiar_contraseña(),
+                style=dict(
+                    border="1px solid #000",  
+                    background_color="transparent", 
+                    padding="1em", 
+                    border_radius="8px", 
+                ),
+            ),
+            primero_login()
+        ),
+        width = "15em",
+        margin_y = "2em",
+    )
+
+
+
     
 def mostrar_conexion():
     return rx.box(
         rx.cond(
             PageState.is_loading,
-            rx.box(
+            rx.hstack(
                 mensaje_alerta("Cargando datos, revise conexion de wifi"),
+                rx.spinner(size="3"),
                 margin_top="2em"
             )
         ),
@@ -1324,7 +1688,6 @@ def responsive_picks():
     return rx.center(
             rx.tablet_and_desktop(
                 rx.vstack(
-                    mostrar_conexion(),
                     picks(),
                     margin_top = "2em",
                     spacing ="4",
@@ -1333,7 +1696,6 @@ def responsive_picks():
             ),
             rx.mobile_only(
                 rx.vstack(
-                    mostrar_conexion(),
                     picks(),
                     margin_top = "2em",
                     spacing ="4",
@@ -1439,7 +1801,7 @@ def imagen(url, text) -> rx.Component:
 def hay_clase_foreach(item):
     return rx.box(
             rx.cond(
-                item.lugar_disponible > 0,
+                (item.lugar_disponible > 0) & (PageState.tiempo_hasta_clase[item.id - 1] > 0),
                 box_ceramica_azul(f"Hay clase disponible el dia {item.dia} {item.fecha}"),
             )
         )
@@ -1549,6 +1911,7 @@ def input_cambiar_contraseña():
         margin_top="1em"
     )
     
+
 def inputs():
     return rx.vstack(
         input_box(),
@@ -1557,6 +1920,14 @@ def inputs():
             rx.box(
                 mensaje_fall(Login.error_login),
             width=Login.box_width_login),
+        ),
+        rx.cond(
+            Login.cond_link_correcto,
+            mensaje_check(Login.mensaje_link)
+        ),
+        rx.cond(
+            Login.cond_link_error,
+            mensaje_fall(Login.mensaje_link)
         ),
         margin_top="7em",
     )
@@ -1592,7 +1963,7 @@ def input_box():
                     ),
                     padding="0px",
                     width=Login.email_width_login,
-                    border_bottom=f"2px solid {Login.email_underline_color}",
+                    border_bottom=f"2px solid {Login.email_underline_color_login}",
                     transition="width 0.65s ease 0.65s",
                 ),
             ),
@@ -1781,10 +2152,10 @@ def input_create_user():
                 Login.cond_create_user,
                 rx.box(
                     rx.button(
-                        "Crear usuario",
+                        "En Mantenimiento",
                         width  = "10.5em",
                         height= "3em",
-                        on_click= lambda:Login.registrar_user_submit(),
+                        # on_click= lambda:Login.registrar_user_submit(),
                         style=style_gris_pizzarra_button
                     ),
                 min_width="auto",
@@ -1825,19 +2196,51 @@ def user_list():
     
     
 def box_marron_eliminar_user(item):
-    return rx.hstack(
-    box_marron(item.fullname),
-    trigger_eliminar_usuario(trigger_eliminar(), "¿Segura que desea eliminar este usuario?", "El usuario sera eliminado de la base de datos","/usuarios",item.id, item.user_uid),
-    spacing="1")
+    return rx.box(
+    rx.tablet_and_desktop(
+        rx.vstack(
+            rx.cond(item.trigger_alert > 0,
+                box_marron(f"{item.fullname} fallo en recuperar la clase {item.clases_canceladas} . Clases disponibles: {item.clases_disponibles + item.recuperar}", "20em"),
+                box_marron(f"{item.fullname} clases disponibles: {item.clases_disponibles + item.recuperar}", "20em")
+            ),
+            trigger_eliminar_usuario(trigger_eliminar(item, "22.8em"), "¿Segura que desea eliminar este usuario?", "El usuario sera eliminado de la base de datos","/usuarios",item.id, item.user_uid),
+            rx.hstack(
+                trigger_mover_usuarios(button_habilitar_credito(),"Confirma", f"¿Queres habilitar un credito para {item.fullname}?","/usuarios",button_aumentar_clases(item.id)),
+                trigger_mover_usuarios(button_eliminar_credito(),"Confirma", f"¿Queres eliminar un credito para {item.fullname}?","/usuarios",button_disminuir_clases(item.id)),
+            ),
+        )
+    ),
+    rx.mobile_only(
+        rx.cond(item.trigger_alert > 0,
+            box_marron(f"{item.fullname} fallo en recuperar la clase {item.clases_canceladas} . Clases disponibles: {item.clases_disponibles + item.recuperar}", "90%"),
+            box_marron(f"{item.fullname} clases disponibles: {item.clases_disponibles + item.recuperar}", "90%")
+        ),
+        rx.vstack(
+            trigger_eliminar_usuario(trigger_eliminar(item, "90%"), "¿Segura que desea eliminar este usuario?", "El usuario sera eliminado de la base de datos","/usuarios",item.id, item.user_uid),
+            rx.hstack(    
+                trigger_mover_usuarios(button_habilitar_credito(),"Confirma", f"¿Queres habilitar un credito para {item.fullname}?","/usuarios",button_aumentar_clases(item.id)),
+                rx.spacer(),
+                trigger_mover_usuarios(button_eliminar_credito(),"Confirma", f"¿Queres eliminar un credito para {item.fullname}?","/usuarios",button_disminuir_clases(item.id)),
+            ),
+        ),
+    ),
+    spacing="0",
+    width= "90%",
+    # margin_top="2em",
+    margin_left= "1em",
+    border_radius="1em",
+    padding="1em",
+    bg="#F8F9F9")
     
-def trigger_eliminar():
+def trigger_eliminar(item,width):
     return rx.button(
-        rx.text("Eliminar"),
+        rx.text(f"Eliminar a {item.fullname}"),
         style=style_ceramica_roja_button,
-        width = Size.MEDIUM.value
+        width = width,
+        margin_top="1em"
     )
         
-def form_select_fecha():
+def form_select_fecha(param):
     return rx.vstack(
         rx.form.root(
             rx.hstack(
@@ -1847,6 +2250,7 @@ def form_select_fecha():
                     name="select",
                 ),
                 submit_button(),
+                form_switch() ,
                 width="100%",
             ),
             on_submit=PageState.handle_submit,
@@ -1854,42 +2258,57 @@ def form_select_fecha():
             width="100%",
         ),
         rx.divider(width="100%"),
-        foreach_fechas(),
+        foreach_fechas(param),
         width="100%",
     )
 
-def mostrar_clases(item):
+def mostrar_clases(item,):
     return rx.vstack(
-        rx.cond(item.mails,
-                rx.cond(item.mails.length() == 1,
-                    rx.cond(
-                        PageState.fecha.to_string() == item.fecha.to_string(),
-                        rx.box(box_ceramica_azul(f"El dia  {item.dia} {item.fecha} a las {item.hora} viene: {item.mails}"),
-                            rx.hstack(
-                                trigger_insertar_usuario(item),
-                                trigger_remover_usuario(item)
+            rx.cond(item.mails,
+                    rx.cond(item.mails.length() == 1,
+                        rx.cond(
+                            PageState.fecha.to_string() == item.fecha.to_string(),
+                            rx.box(box_ceramica_azul(f"El dia  {item.dia} {item.fecha} a las {item.hora} viene: {item.mails}"),
+                                rx.hstack(
+                                    trigger_insertar_usuario(item),
+                                    trigger_remover_usuario(item)
+                                )
+                            )
+                        ),
+                        rx.cond(
+                            PageState.fecha.to_string() == item.fecha.to_string(),
+                            rx.box(box_ceramica_azul(f"El dia  {item.dia} {item.fecha} a las {item.hora} vienen: {item.mails}"),
+                                rx.hstack(
+                                    trigger_insertar_usuario(item),
+                                    trigger_remover_usuario(item)
+                                )
                             )
                         )
                     ),
-                    rx.cond(
-                        PageState.fecha.to_string() == item.fecha.to_string(),
-                        rx.box(box_ceramica_azul(f"El dia  {item.dia} {item.fecha} a las {item.hora} vienen: {item.mails}"),
-                            rx.hstack(
-                                trigger_insertar_usuario(item),
-                                trigger_remover_usuario(item)
-                            )
+                rx.cond(
+                    PageState.fecha.to_string() == item.fecha.to_string(),
+                    rx.box(box_ceramica_azul(f"El dia  {item.dia} {item.fecha} a las {item.hora} no viene ningun alumno"),
+                        rx.hstack(
+                            trigger_insertar_usuario(item),
                         )
-                    )
-                ),
-            rx.cond(
-                PageState.fecha.to_string() == item.fecha.to_string(),
-                rx.box(box_ceramica_azul(f"El dia  {item.dia} {item.fecha} a las {item.hora} no viene ningun alumno"),
-                    rx.hstack(
-                        trigger_insertar_usuario(item),
                     )
                 )
             )
-        ),
+        )
+    
+def mostrar_clases_disponibles(item):
+    return rx.vstack(
+        rx.cond(
+            PageState.fecha.to_string() == item.fecha.to_string(),
+            rx.vstack(
+                box_ceramica_azul(f"Lugares disponibles el dia {item.dia} {item.fecha} a las {item.hora}: {item.lugar_disponible}"),
+                rx.hstack(
+                    button_aumentar_lugar(item.id),
+                    button_disminuir_lugar(item),
+                ),
+                spacing="1"
+            )
+        )
     )
 
 def actualizar_capacidad_maxima():
@@ -1905,16 +2324,24 @@ def actualizar_capacidad_maxima():
     )
 
 
-def foreach_fechas():
+def foreach_fechas(param):
     return rx.vstack(
-        rx.foreach(
-        PageState.filtered_list_fecha,
-        mostrar_clases
-    ))
+        rx.cond(
+            param,
+            rx.foreach(
+            PageState.filtered_list_fecha,
+            mostrar_clases
+            ),
+            rx.foreach(
+            PageState.filtered_list_fecha,
+            mostrar_clases_disponibles
+            ),
+        )
+    )
 
 def total_horarios_para_cancelar():
 
-    horarios = PageState.total_info
+    horarios = PageState.in_clase
     
     return rx.vstack(
         rx.cond(Login.mi_cookie,
@@ -1938,7 +2365,7 @@ def total_horarios():
             rx.box(
                 rx.foreach(
                     horarios,
-                    lambda item, index: text_box(item, index)
+                    text_box
                 ),
             margin_top="1em"),
             rx.heading("Todavia no esta inscripto en ninguna clase", size= "4"),
@@ -1975,8 +2402,8 @@ def mensaje_fall(text):
             rx.text.strong(text),
             spacing="1",
         ),
-        style=style_ceramica_roja_box,
-    ),
+        style=style_ceramica_roja_box
+    )
 
 def mensaje_check(text):
     return rx.box(
@@ -1984,7 +2411,7 @@ def mensaje_check(text):
             rx.text.strong(text),
             spacing="1"
         ),
-        style=style_verde_esmeralda_button
+        style=style_verde_esmeralda_box
     )
     
 def error_momentaneo():
@@ -2018,7 +2445,7 @@ def text_box_para_cancelar(item, index):
         )
     )
 
-def text_box(item, index):
+def text_box(item):
    
     return rx.cond(
         item.mails.contains(Login.mi_cookie),
@@ -2057,7 +2484,7 @@ def dias_semanales():
 
 def alert():
     return rx.vstack(
-        box_marron("Antes de cancelar una clase por favor lea atentamente haciendo click en las condiciones:"),
+        box_marron("Antes de cancelar una clase por favor lea atentamente haciendo click en las condiciones:", "auto"),
         trigger_alert(button_rubi(),"Recuperar clase",  "Para poder recuperar una clase es indispensable cancelar con 24hs de anticipacion de lo contrario no podra ser recuperada", "/mis_horarios", None),
     )
 
@@ -2098,14 +2525,14 @@ def trigger_eliminar_usuario(button, title, dialogo, rute , id, user_uid):
                         button_eliminar_user(rute, id, user_uid),
                     ),
                     rx.alert_dialog.cancel(
-                        button_cancel(),
+                        button_cancel_trigger(),
                     ),
                     spacing="3",
                 ),
             ),
         )
     
-def trigger_mover_usuarios(button, title, dialogo, rute, mover_usuario):
+def trigger_mover_usuarios(button, title, dialogo, rute, aceptar):
     return rx.alert_dialog.root(
             rx.alert_dialog.trigger(
                 button
@@ -2117,10 +2544,10 @@ def trigger_mover_usuarios(button, title, dialogo, rute, mover_usuario):
                 ),
                 rx.flex(
                     rx.alert_dialog.action(
-                        mover_usuario,
+                        aceptar,
                     ),
                     rx.alert_dialog.cancel(
-                        button_cancel_desplazamiento(),
+                        button_cancel_trigger(),
                     ),
                     spacing="3",
                 ),
@@ -2139,18 +2566,19 @@ def trigger_insertar_usuario(item):
         ),
     ),
     rx.alert_dialog.content(
-        rx.alert_dialog.title("Insertar usuario a la clase:"),
+        rx.cond(PageState.switch,
+                rx.alert_dialog.title(f"Insertar usuario a 4 clases los dias {item.dia} a las {item.hora}"),
+                rx.alert_dialog.title(f"Insertar usuario a la clase:")
+                ),
         rx.alert_dialog.description(
             rx.vstack( 
         rx.form.root(
             rx.vstack(
                 rx.hstack(
-                    rx.select(
-                        PageState.list_personas,
+                    rx.chakra.input(
                         value=PageState.user_clase,
-                        placeholder= "usuario",
-                        on_change=PageState.set_user_clase,
-                    ),
+                        placeholder="Ingrese usuario",
+                        on_change= PageState.set_nombre),
                     rx.cond(PageState.fecha.to_string() == item.fecha.to_string(),
                         rx.select(
                         [item.fecha],
@@ -2167,8 +2595,12 @@ def trigger_insertar_usuario(item):
                         value=PageState.seleccionar_hora,
                         on_change= PageState.set_seleccionar_hora
                         )
-                    ),      
-                ),rx.hstack(
+                    )     
+                ),
+                rx.cond(PageState.nombre,
+                    scroll(),
+                ),
+                rx.hstack(
                     rx.flex(
                         rx.alert_dialog.action(
                             rx.button(
@@ -2198,6 +2630,16 @@ def trigger_insertar_usuario(item):
         ),
     ),
 )
+    
+def form_switch():
+    return rx.hstack(
+        rx.switch(
+            checked=PageState.switch,
+            on_change=PageState.switched,
+        ),
+        rx.text.strong("x4", color = PageState.color_switch),
+        spacing="2"
+    )
 
 def trigger_remover_usuario(item):
     return rx.alert_dialog.root(
@@ -2210,38 +2652,50 @@ def trigger_remover_usuario(item):
         ),
     ),
     rx.alert_dialog.content(
-        rx.alert_dialog.title("Remover usuario de la clase:"),
+        rx.cond(
+            PageState.switch,
+            rx.alert_dialog.title("Remover usuario de todas las clases del mes:"),
+            rx.alert_dialog.title("Remover usuario de la clase:")
+        ),
         rx.alert_dialog.description(
             rx.vstack( 
         rx.form.root(
             rx.vstack(
                 rx.hstack(
                     rx.cond(PageState.fecha.to_string() == item.fecha.to_string(),
-                        rx.select(
-                            PageState.list_personas,
-                            value=PageState.user_clase,
-                            placeholder= "usuario",
-                            on_change=PageState.set_user_clase,
-                        )
+                        rx.chakra.input(
+                        value=PageState.user_clase,
+                        placeholder="Ingrese usuario",
+                        on_change=PageState.set_nombre),
                     ),
-                    rx.cond(PageState.fecha.to_string() == item.fecha.to_string(),
-                        rx.select(
-                        [item.fecha],
-                        value=PageState.fecha_seleccion_horarios,
-                        placeholder= "fecha",
-                        on_change= PageState.set_fecha_seleccion_horarios
+                    rx.cond(~PageState.switch,
+                        rx.box(
+                            rx.hstack(
+                                rx.cond(PageState.fecha.to_string() == item.fecha.to_string(),
+                                    rx.select(
+                                    [item.fecha],
+                                    value=PageState.fecha_seleccion_horarios,
+                                    placeholder= "fecha",
+                                    on_change= PageState.set_fecha_seleccion_horarios
+                                    )
+                                ),
+                                rx.cond(
+                                    PageState.fecha.to_string() == item.fecha.to_string(),
+                                    rx.select(
+                                    [item.hora],
+                                    placeholder= "hora",
+                                    value=PageState.seleccionar_hora,
+                                    on_change= PageState.set_seleccionar_hora
+                                    )
+                                )
+                            )
                         )
-                    ),
-                    rx.cond(
-                        PageState.fecha.to_string() == item.fecha.to_string(),
-                        rx.select(
-                        [item.hora],
-                        placeholder= "hora",
-                        value=PageState.seleccionar_hora,
-                        on_change= PageState.set_seleccionar_hora
-                        )
-                    ),
-                ),rx.hstack(
+                    ) 
+                ),
+                rx.cond(PageState.nombre,
+                    scroll(),
+                ),
+                rx.hstack(
                     rx.flex(
                         rx.alert_dialog.action(
                             rx.button(
@@ -2273,12 +2727,54 @@ def trigger_remover_usuario(item):
 )
 
 
+def scroll():    
+    return rx.box(
+        rx.tablet_and_desktop(
+            rx.scroll_area(
+            rx.flex(
+                rx.foreach(
+                    PageState.list_personas,
+                    lambda user: rx.text(user, on_click=[PageState.seleccionar_usuario(user)])
+                ),
+                direction="column",
+                spacing="4",
+                padding_right="1em"
+            ),
+            type="always",
+            width= "15em",
+            height="9em",
+            align="center",
+            scrollbars="vertical",
+            style={"height": 180},
+            )
+        ),
+        rx.mobile_only(
+            rx.scroll_area(
+            rx.flex(
+                rx.foreach(
+                    PageState.list_personas,
+                    lambda user: rx.text(user, on_click=[PageState.seleccionar_usuario(user)])
+                ),
+                direction="column",
+                spacing="4",
+                padding_right="1em"
+            ),
+            type="always",
+            width= "18",
+            height="9em",
+            align="center",
+            scrollbars="vertical",
+            style={"height": 180},
+            )
+        )
+    )
 
-def box_marron(item):
+def box_marron(item, width):
     return rx.hstack(
     rx.box(
         rx.text.strong(item, color = "black"),     
-        style=style_marron_box
+        style=style_marron_box,
+        width=width,
     ),
 )
 
@@ -2354,11 +2850,108 @@ def trigger_desplazar_izquierda():
         ),
         padding_top="3em"
     )
+    
+def button_aumentar_lugar(id):
+    return rx.box(
+        rx.tablet_and_desktop(
+            rx.button(
+                rx.text.strong("Agregar un lugar disponible", color="black"),
+                on_click=[ReservaCancela.aumentar_lugar_disponible(id), check_momentaneo(), rx.redirect("/configuracion")],
+                width="15em",
+                style=style_verde_esmeralda_button
+            )
+        ),
+        rx.mobile_only(
+            rx.button(
+                rx.text.strong("Agregar un lugar disponible", color="black"),
+                on_click=[ReservaCancela.aumentar_lugar_disponible(id), check_momentaneo(), rx.redirect("/configuracion")],
+                width="12em",
+                style=style_verde_esmeralda_button
+            )
+        ),
+    )
+    
+def button_disminuir_lugar(item):
+    return rx.box(
+        rx.tablet_and_desktop(
+            rx.cond(item.lugar_disponible > 0,
+                rx.button(
+                    rx.text.strong("Disminuir un lugar disponible", color="black"),
+                    on_click=[ReservaCancela.disminuir_lugar_disponible(item.id), check_momentaneo(), rx.redirect("/configuracion")],
+                    width="15em",
+                    style=style_ceramica_roja_button
+                ),
+                rx.button(
+                    rx.text.strong("Disminuir un lugar disponible", color="black"),
+                    on_click=[ReservaCancela.disminuir_lugar_disponible(item.id), error_momentaneo(), rx.redirect("/configuracion")],
+                    width="15em",
+                    style=style_ceramica_roja_button
+                )
+            ),
+        ),
+        rx.mobile_only(
+            rx.cond(item.lugar_disponible > 0,
+                rx.button(
+                    rx.text.strong("Disminuir un lugar disponible", color="black"),
+                    on_click=[ReservaCancela.disminuir_lugar_disponible(item.id), check_momentaneo(), rx.redirect("/configuracion")],
+                    width="12em",
+                    style=style_ceramica_roja_button
+                ),
+                rx.button(
+                    rx.text.strong("Disminuir un lugar disponible", color="black"),
+                    on_click=[ReservaCancela.disminuir_lugar_disponible(item.id), error_momentaneo(), rx.redirect("/configuracion")],
+                    width="12em",
+                    style=style_ceramica_roja_button
+                ),
+            )
+        ),
+    )
+    
 
+def button_aumentar_clases(id):
+    return rx.box(
+        rx.tablet_and_desktop(
+            rx.button(
+                rx.text.strong("Aceptar", color="black"),
+                on_click=[ReservaCancela.aumentar_clases_disponible(id), check_momentaneo(), rx.redirect("/usuarios")],
+                width="15em",
+                style=style_marron_button
+            )
+        ),
+        rx.mobile_only(
+            rx.button(
+                rx.text.strong("Aceptar", color="black"),
+                on_click=[ReservaCancela.aumentar_clases_disponible(id), check_momentaneo(), rx.redirect("/usuarios")],
+                width="9em",
+                style=style_marron_button
+            )
+        ),
+        )
+    
+def button_disminuir_clases(id):
+    return rx.box(
+        rx.tablet_and_desktop(
+            rx.button(
+                rx.text.strong("Aceptar", color="black"),
+                on_click=[ReservaCancela.disminuir_clases_disponible(id), check_momentaneo(), rx.redirect("/usuarios")],
+                width="15em",
+                style=style_marron_button
+            )
+        ),
+        rx.mobile_only(
+            rx.button(
+                rx.text.strong("Aceptar", color="black"),
+                on_click=[ReservaCancela.disminuir_clases_disponible(id), check_momentaneo(), rx.redirect("/usuarios")],
+                width="9em",
+                style=style_marron_button
+            )
+        ),
+        )
+    
 def button_mover_derecha():
     return rx.button(
         rx.text.strong("Aceptar", color="black"),
-        on_click=[ReservaCancela.desplazando_derecha(), rx.redirect("/gestion_horarios/")],
+        on_click=[ReservaCancela.desplazando_derecha(), rx.redirect("/configuracion")],
         width="15em",
         style=style_marron_button
         )
@@ -2367,39 +2960,51 @@ def button_mover_derecha():
 def button_mover_izquierda():
     return rx.button(
         rx.text.strong("Aceptar", color="black"),
-        on_click=[ReservaCancela.desplazando_izquierda(), rx.redirect("/gestion_horarios/")],
+        on_click=[ReservaCancela.desplazando_izquierda(), rx.redirect("/configuracion")],
         width="15em",
         style=style_marron_button
         )
 
 def button_clase(item : Total):    
-
+    
     return rx.center(
-        rx.cond(item.semana == PageState.semana,  
+        rx.cond(
+            item.semana == PageState.semana,  
+            rx.cond(
+                (item.lugar_disponible > 0) & (item.mails.length() < 5),
                 rx.cond(
-                    item.lugar_disponible > 0,
-                    rx.cond(~ Login.mi_cookie,
-                            trigger_alert(button_green(item), "Accede a tu Cuenta", "Para poder inscribirte a una clase debes iniciar sesión", "/turnos", error_momentaneo),
+                    PageState.tiempo_hasta_clase[item.id - 1] > 0,
+                    rx.cond(
+                        ~ Login.mi_cookie,
+                        trigger_alert(button_green(item), "Accede a tu Cuenta", "Para poder inscribirte a una clase debes iniciar sesión", "/turnos", error_momentaneo),
                         rx.cond(
+                            PageState.clase_pasada < 0 ,
+                            trigger_alert(button_green(item), "Esta clase Ya paso", "Esta clase ya paso", "/turnos", error_momentaneo),
+                            rx.cond(
                                 item.mails.contains(Login.mi_cookie),
                                 trigger_alert(button_green(item), "Ya tenes clase este dia!", "No puedes inscribirte dos veces en la misma clase", "/turnos", error_momentaneo),                            
-                            rx.cond(
+                                rx.cond(
                                     (PageState.check_cant_clases > 0) | (PageState.check_recuperar > 0),
-                                    trigger_alert(button_green(item), "Incripcion exitosa", f"se ha inscripto exitosamente a la clase el dia {item.dia} {item.fecha} a las {item.hora}", "/turnos", check_momentaneo),                            rx.cond(
-                                    (PageState.check_cant_clases == 0) & (PageState.check_recuperar == 0) & (PageState.check_trigger_alert == 0 ),
-                                    trigger_alert(button_green(item), "No puedes sumarte a esta clase", 'Ya tienes todas tus clases asignadas del mes, consultalo en "mis horarios" ', "/turnos", error_momentaneo),
+                                    trigger_alert(button_green(item), "Incripcion exitosa", f"se ha inscripto exitosamente a la clase el dia {item.dia} {item.fecha} a las {item.hora}", "/turnos", check_momentaneo),                            
                                     rx.cond(
-                                        (PageState.check_trigger_alert > 0 ),
+                                        PageState.check_trigger_alert > 0,
                                         trigger_alert(button_green(item), "No puedes sumarte a esta clase", "Para recuperar una clase debes cancelar con 24hs de anticipacion", "/turnos", error_momentaneo),
+                                        rx.cond(
+                                            (PageState.check_cant_clases == 0) & (PageState.check_recuperar == 0) & (PageState.check_trigger_alert == 0 ) & (PageState.no_tiene_clases >0),
+                                            trigger_alert(button_green(item), "No puedes sumarte a esta clase", 'Ya tienes todas tus clases asignadas del mes, consultalo en "mis horarios" ', "/turnos", error_momentaneo),
+                                            trigger_alert(button_green(item), "Asignación de clases", "Todavia no tienes tus clases asignadas", "/turnos", error_momentaneo),
+                                        )
                                     )
                                 )
                             )
                         )
                     ),
+                    button_disabled(item)
+                ),
                 button_disabled(item)
-                )
-            ) 
-        )
+            )
+        ) 
+    )
 
     
 
@@ -2449,22 +3054,42 @@ def button_cancel():
         width=Size.MEDIUM.value
     )
     
-def button_cancel_desplazamiento():
-    return rx.button(
-        rx.text.strong("Cancelar", color="black"),
-        style=style_marron_button,
-        width="15em"
+def button_cancel_trigger():
+    return rx.box(
+        rx.tablet_and_desktop(
+            rx.button(
+                rx.text.strong("Cancelar", color="black"),
+                style=style_marron_button,
+                width="15em",
+            )
+        ),
+        rx.mobile_only(
+            rx.button(
+                rx.text.strong("Cancelar", color="black"),
+                style=style_marron_button,
+                width="9em",
+            )
+        )
     )
 
 def button_eliminar_user(rute, id, user_uid):
-    return rx.link(
-    rx.button(
-        rx.text.strong("Eliminar", color="black"),
-        style=style_perla_button,
-        width = Size.MEDIUM.value,
-        on_click=ReservaCancela.eliminar_usuario_de_bd(id, user_uid)
+    return rx.box(
+        rx.tablet_and_desktop(
+        rx.button(
+            rx.text.strong("Eliminar", color="black"),
+            style=style_marron_button,
+            width = "15em",
+            on_click=[ReservaCancela.eliminar_usuario_de_bd(id, user_uid), rx.redirect(rute)]
+            ),
         ),
-    href=rute
+        rx.mobile_only(
+        rx.button(
+            rx.text.strong("Eliminar", color="black"),
+            style=style_marron_button,
+            width = "9em",
+            on_click=[ReservaCancela.eliminar_usuario_de_bd(id, user_uid), rx.redirect(rute)]
+            ),
+        )
     )
 
 def button_disabled(item) -> rx.Component:
@@ -2478,6 +3103,48 @@ def button_disabled(item) -> rx.Component:
             width= "14.5em",
         )
     ) 
+    
+def button_habilitar_credito():
+    return rx.box(
+        rx.tablet_and_desktop(
+            rx.button(
+            rx.hstack(
+                rx.text("Habilitar clase"),
+                ), 
+            style= style_verde_esmeralda_button, 
+            width = "11em",
+            ),
+        ),
+        rx.mobile_only(
+            rx.button(
+            rx.text("Habilitar clase"),
+            style= style_verde_esmeralda_button, 
+            padding_x="1em",
+            width = "100%"
+            ),
+        ),
+    )
+
+def button_eliminar_credito():
+    return rx.box(
+        rx.tablet_and_desktop(
+            rx.button(
+            rx.hstack(
+                rx.text("Eliminar un credito"),
+                ), 
+            style= style_ceramica_roja_button, 
+            width = "11em",
+            ),
+        ),
+        rx.mobile_only(
+            rx.button(
+            rx.text("Eliminar un credito"),
+            style= style_ceramica_roja_button, 
+            padding_x="1em",
+            width = "100%"
+            ),
+        ),
+    )
 
 def crear_usuario_button():
     return rx.center(
@@ -2604,6 +3271,7 @@ def contacto(imagen, text, url):
 
 def navbar() -> rx.Component:
     return rx.box(
+        rx.box(
             rx.hstack(
                 rx.box(
                     rx.hstack(
@@ -2612,10 +3280,10 @@ def navbar() -> rx.Component:
                                 rx.text("Taller de ceramica",
                                     white_space="normal",
                                     width ="4.5em",
-                                    _hover={"color": "linear-gradient(145deg, #708090, #4e5964)"}
+                                    _hover={"color": "#DFC57B"}
                                 ),
                                 href="/",
-                                color =  "#FCFDFD"
+                                color =  "#FCFDFD",
                             )
                         ),
                         rx.tablet_and_desktop(
@@ -2623,7 +3291,7 @@ def navbar() -> rx.Component:
                                 rx.text("Taller de ceramica",
                                     padding_left=Size.VERY_SMALL.value,
                                     white_space="normal",
-                                    _hover={"color":"#4e5964"}
+                                    _hover={"color": "#DFC57B"}
                                 ),
                                 href="/",
                                 color =  "#FCFDFD",
@@ -2631,7 +3299,8 @@ def navbar() -> rx.Component:
                             )
                         ),
                     options_button(),
-                    desplegable_button()
+                    desplegable_button(),
+                    spacing="3"
                     )
                 ),
                 rx.spacer(),
@@ -2669,8 +3338,29 @@ def navbar() -> rx.Component:
             box_shadow="1px 1px 2px #696969, -1px -1px 2px #b8b8b8",
             color="#050505",
             font_weight="bold",
-            ),
+            )
+        ),
+        rx.center(
+            mostrar_conexion()
+        )
     )
+
+def etiqueta():
+    return rx.text(
+    "Hover over the text to see the tooltip. ",
+    rx.hover_card.root(
+        rx.hover_card.trigger(
+            rx.link(
+                "Hover over me",
+                color_scheme="blue",
+                underline="always",
+            ),
+        ),
+        rx.hover_card.content(
+            rx.text("This is the tooltip content."),
+        ),
+    ),
+)
 
 def options_button():
     return rx.drawer.root(
@@ -2739,8 +3429,8 @@ def desplegable_button():
                 rx.cond((Login.mi_cookie == "Manuel Navarro") | (Login.mi_cookie == "Ivanna Risaro"),
                     rx.box(
                         rx.vstack(
-                            button_menu("gestion horarios", "/gestion_horarios"),
-                            button_menu("alumnos/as", "/usuarios"),
+                            button_menu("Gestion horarios", "/gestion_horarios"),
+                            button_menu("Alumnos/as", "/usuarios"),
                             spacing="0"
                         )
                     )
@@ -2793,7 +3483,34 @@ def dias_clases(cond, dia, foreach, item):
             )
         ) 
     
+def button_magin_link():
+    return rx.vstack(
+        rx.form.root(
+            rx.vstack(
+                rx.heading("Envia link de autenticacion:", size="2"),
+                rx.input(
+                    name="email",
+                    placeholder="Mail para mandar link",
+                    type="text",
+                    required=True,
+                ),
+                rx.button("Enviar", type="submit", style=style_verde_esmeralda_button, width="6em", margin_bottom="2em"),
+                width="100%",
+            ),
+            on_submit=Login.enviar_magic_link,
+            reset_on_submit=True,
+            width="100%",
+        ),
+        rx.cond(Login.cond_link_correcto,
+                mensaje_check(Login.mensaje_link),
+                rx.cond(Login.cond_link_incorrecto,
+                        mensaje_fall(Login.mensaje_link),
+                        rx.cond(Login.cond_link_error,
+                                mensaje_fall(Login.mensaje_link)))
+        )
+    )
 
+    
 
 BASE_STYLE = {
     "font_family": "1em",
@@ -2864,14 +3581,14 @@ style_ceramica_azul_box = dict(
 )
 
 style_verde_esmeralda_button = dict(
-    bg="#B6FF99", 
-    border="2px solid #B6FF99",  
+    bg="linear-gradient(145deg, #B6FF99, #80B96A)",
+    border="2px solid #79AF64",  
     font_weight="bold",
     border_radius="7px",
     padding="5px",
     _hover={
-        "bg": "linear-gradient(145deg, #27ae60, #2ecc71)",  
-        "box_shadow": "inset 1px 1px 3px #1c6c41, inset -5px -5px 10px #3ccf8e",  
+        "bg": "linear-gradient(145deg, #A3C77B, #B6FF99)",  
+        "box_shadow": "inset 1px 1px 1px #779F49, inset 0px 0px 1px #ffc0c0",  
     },
     _focus={
         "outline": "none",  # Elimina el borde de enfoque
@@ -2885,9 +3602,9 @@ style_verde_esmeralda_button = dict(
 )
 
 style_verde_esmeralda_box = dict(
-    bg="#B6FF99",  
-    border="2px solid #B6FF99",  
-    box_shadow="1px 1px 2px #a9a9a9, -1px -1px 2px #dcdcdc",
+    bg="linear-gradient(145deg, #B6FF99, #80B96A)",
+    border="2px solid #79AF64",  
+    box_shadow="1px 1px 2px #a9a9a9, -1px -1px 2px #B6FF99",
     border_radius="5px",
     font_weight="bold",
     padding="5px",
@@ -3064,40 +3781,37 @@ style_gris_pizzarra_dark_box = dict(
 )
 
 style_ceramica_roja_button= dict(
-    bg="linear-gradient(145deg, #e08080, #c06060)",
+    bg="linear-gradient(145deg, #ED787A, #A35E5F)",
     border="2px solid #a04040",
     border_radius="7px",
-    box_shadow="1px 1px 1px #903030, -1px -1px 1px #ffa0a0",
-    color="#ffffff",
     font_weight="bold",
-    padding="3px",
-    transition="all 0.5s ease",
-    width="7em",
+    padding="5px",
     _hover={
-        "bg": "linear-gradient(145deg, #A47070, #e08080)",
+        "bg": "linear-gradient(145deg, #DE686A, #ED787A)",
         "box_shadow": "inset 1px 1px 1px #b05050, inset 0px 0px 1px #ffc0c0",
     },
     _focus={
-        "outline": "none",  # Elimina el borde de enfoque
-        "box_shadow": "none",  # Elimina la sombra de enfoque
+        "outline": "none",  
+        "box_shadow": "none",  
     },
     _active={
-        "outline": "none",  # Elimina el borde de enfoque al presionar
-        "box_shadow": "none",  # Elimina la sombra de enfoque al presionar
+        "outline": "none", 
+        "box_shadow": "none", 
     },
     _webkit_tap_highlight_color= "transparent", 
     )
 
+
 style_ceramica_roja_box= dict(
-    bg="linear-gradient(145deg, #e08080, #c06060)",
+    bg="linear-gradient(145deg, #ED787A, #A35E5F)",
     border="2px solid #a04040",
-    border_radius="7px",
-    box_shadow="1px 1px 1px #903030, -1px -1px 1px #ffa0a0",
-    color="#ffffff",
+    border_radius="5px",
+    box_shadow="1px 1px 2px #a9a9a9, -1px -1px 2px #ffa0a0",
     font_weight="bold",
-    padding="3px",
-    transition="all 0.5s ease"
+    padding="5px",
     )
+
+
 
 
 def button_rubi():
@@ -3533,4 +4247,7 @@ app.add_page(gestion_horarios)
 app.add_page(crear_usuario)
 app.add_page(login)
 
+
     
+
+
